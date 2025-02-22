@@ -1,9 +1,5 @@
-'use strict';
-const {uniq} = require('lodash');
-const getScopes = require('./get-scopes.js');
+import getScopes from './get-scopes.js';
 
-const getReferences = scope => uniq(
-	getScopes(scope).flatMap(({references}) => references),
-);
+const getReferences = scope => [...new Set(getScopes(scope).flatMap(({references}) => references))];
 
-module.exports = getReferences;
+export default getReferences;

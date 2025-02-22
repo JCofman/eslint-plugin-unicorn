@@ -1,11 +1,9 @@
-'use strict';
-const {isParenthesized, getStaticValue} = require('eslint-utils');
-const {checkVueTemplate} = require('./utils/rule.js');
-const isLiteralValue = require('./utils/is-literal-value.js');
-const isLogicalExpression = require('./utils/is-logical-expression.js');
-const {isBooleanNode, getBooleanAncestor} = require('./utils/boolean.js');
-const {memberExpressionSelector} = require('./selectors/index.js');
-const {fixSpaceAroundKeyword} = require('./fix/index.js');
+import {isParenthesized, getStaticValue} from '@eslint-community/eslint-utils';
+import {checkVueTemplate} from './utils/rule.js';
+import isLogicalExpression from './utils/is-logical-expression.js';
+import {isBooleanNode, getBooleanAncestor} from './utils/boolean.js';
+import {fixSpaceAroundKeyword} from './fix/index.js';
+import {isLiteral, isMemberExpression, isNumberLiteral} from './ast/index.js';
 
 const TYPE_NON_ZERO = 'non-zero';
 const TYPE_ZERO = 'zero';
@@ -19,11 +17,11 @@ const messages = {
 const isCompareRight = (node, operator, value) =>
 	node.type === 'BinaryExpression'
 	&& node.operator === operator
-	&& isLiteralValue(node.right, value);
+	&& isLiteral(node.right, value);
 const isCompareLeft = (node, operator, value) =>
 	node.type === 'BinaryExpression'
 	&& node.operator === operator
-	&& isLiteralValue(node.left, value);
+	&& isLiteral(node.left, value);
 const nonZeroStyles = new Map([
 	[
 		'greater-than',
@@ -44,8 +42,6 @@ const zeroStyle = {
 	code: '=== 0',
 	test: node => isCompareRight(node, '===', 0),
 };
-
-const lengthSelector = memberExpressionSelector(['length', 'size']);
 
 function getLengthCheckNode(node) {
 	node = node.parent;
@@ -93,13 +89,22 @@ function getLengthCheckNode(node) {
 	return {};
 }
 
+function isNodeValueNumber(node, context) {
+	if (isNumberLiteral(node)) {
+		return true;
+	}
+
+	const staticValue = getStaticValue(node, context.sourceCode.getScope(node));
+	return staticValue && typeof staticValue.value === 'number';
+}
+
 function create(context) {
 	const options = {
 		'non-zero': 'greater-than',
 		...context.options[0],
 	};
 	const nonZeroStyle = nonZeroStyles.get(options['non-zero']);
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	function getProblem({node, isZeroLengthCheck, lengthNode, autoFix}) {
 		const {code, test} = isZeroLengthCheck ? zeroStyle : nonZeroStyle;
@@ -133,7 +138,6 @@ function create(context) {
 			problem.suggest = [
 				{
 					messageId: MESSAGE_ID_SUGGESTION,
-					data: problem.data,
 					fix,
 				},
 			];
@@ -143,12 +147,19 @@ function create(context) {
 	}
 
 	return {
-		[lengthSelector](lengthNode) {
-			if (lengthNode.object.type === 'ThisExpression') {
+		MemberExpression(memberExpression) {
+			if (
+				!isMemberExpression(memberExpression, {
+					properties: ['length', 'size'],
+					optional: false,
+				})
+				|| memberExpression.object.type === 'ThisExpression'
+			) {
 				return;
 			}
 
-			const staticValue = getStaticValue(lengthNode, context.getScope());
+			const lengthNode = memberExpression;
+			const staticValue = getStaticValue(lengthNode, sourceCode.getScope(lengthNode));
 			if (staticValue && (!Number.isInteger(staticValue.value) || staticValue.value < 0)) {
 				// Ignore known, non-positive-integer length properties.
 				return;
@@ -168,7 +179,13 @@ function create(context) {
 				if (isBooleanNode(ancestor)) {
 					isZeroLengthCheck = isNegative;
 					node = ancestor;
-				} else if (isLogicalExpression(lengthNode.parent)) {
+				} else if (
+					isLogicalExpression(lengthNode.parent)
+					&& !(
+						lengthNode.parent.operator === '||'
+						&& isNodeValueNumber(lengthNode.parent.right, context)
+					)
+				) {
 					isZeroLengthCheck = isNegative;
 					node = lengthNode;
 					autoFix = false;
@@ -176,7 +193,12 @@ function create(context) {
 			}
 
 			if (node) {
-				return getProblem({node, isZeroLengthCheck, lengthNode, autoFix});
+				return getProblem({
+					node,
+					isZeroLengthCheck,
+					lengthNode,
+					autoFix,
+				});
 			}
 		},
 	};
@@ -196,12 +218,13 @@ const schema = [
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create: checkVueTemplate(create),
 	meta: {
 		type: 'problem',
 		docs: {
 			description: 'Enforce explicitly comparing the `length` or `size` property of a value.',
+			recommended: true,
 		},
 		fixable: 'code',
 		schema,
@@ -209,3 +232,5 @@ module.exports = {
 		hasSuggestions: true,
 	},
 };
+
+export default config;

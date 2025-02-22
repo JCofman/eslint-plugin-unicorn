@@ -1,8 +1,13 @@
-'use strict';
+import {
+	getRepositories,
+	getPathIgnorePattern,
+} from 'eslint-remote-tester-repositories';
+import typescriptParser from '@typescript-eslint/parser';
+import vueParser from 'vue-eslint-parser';
+import eslintPluginUnicorn from '../../index.js';
 
-const {getRepositories, getPathIgnorePattern} = require('eslint-remote-tester-repositories');
-
-module.exports = {
+/** @type {import('eslint-remote-tester').Config} */
+const config = {
 	/** Repositories to scan */
 	repositories: getRepositories({randomize: true}),
 
@@ -10,7 +15,17 @@ module.exports = {
 	pathIgnorePattern: getPathIgnorePattern(),
 
 	/** Extensions of files under scanning */
-	extensions: ['js', 'jsx', 'ts', 'tsx'],
+	extensions: [
+		'js',
+		'cjs',
+		'mjs',
+		'ts',
+		'cts',
+		'mts',
+		'jsx',
+		'tsx',
+		'vue',
+	],
 
 	/** Maximum amount of tasks ran concurrently */
 	concurrentTasks: 3,
@@ -22,19 +37,44 @@ module.exports = {
 	logLevel: 'info',
 
 	/** ESLint configuration */
-	eslintrc: {
-		root: true,
-		env: {
-			es6: true,
-		},
-		parser: '@typescript-eslint/parser',
-		parserOptions: {
-			ecmaVersion: 'latest',
-			sourceType: 'module',
-			ecmaFeatures: {
-				jsx: true,
+	eslintConfig: [
+		eslintPluginUnicorn.configs.all,
+		{
+			rules: {
+				// This rule crashing on replace string inside `jsx` or `Unicode escape sequence`
+				'unicorn/string-content': 'off',
 			},
 		},
-		extends: ['plugin:unicorn/all'],
-	},
+		{
+			files: [
+				'**/*.ts',
+				'**/*.mts',
+				'**/*.cts',
+				'**/*.tsx',
+			],
+			languageOptions: {
+				parser: typescriptParser,
+				parserOptions: {
+					project: [],
+				},
+			},
+		},
+		{
+			files: [
+				'**/*.vue',
+			],
+			languageOptions: {
+				parser: vueParser,
+				parserOptions: {
+					parser: '@typescript-eslint/parser',
+					ecmaFeatures: {
+						jsx: true,
+					},
+					project: [],
+				},
+			},
+		},
+	],
 };
+
+export default config;

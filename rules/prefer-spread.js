@@ -1,20 +1,19 @@
-'use strict';
-const {isParenthesized, getStaticValue, isCommaToken, hasSideEffect} = require('eslint-utils');
-const {methodCallSelector, not} = require('./selectors/index.js');
-const needsSemicolon = require('./utils/needs-semicolon.js');
-const {getParenthesizedRange, getParenthesizedText} = require('./utils/parentheses.js');
-const shouldAddParenthesesToSpreadElementArgument = require('./utils/should-add-parentheses-to-spread-element-argument.js');
-const isLiteralValue = require('./utils/is-literal-value.js');
-const {isNodeMatches} = require('./utils/is-node-matches.js');
-const {
-	replaceNodeOrTokenAndSpacesBefore,
-	removeSpacesAfter,
-	removeMethodCall,
-} = require('./fix/index.js');
+import {getStaticValue, isCommaToken, hasSideEffect} from '@eslint-community/eslint-utils';
+import {
+	getParenthesizedRange,
+	getParenthesizedText,
+	needsSemicolon,
+	isNodeMatches,
+	isMethodNamed,
+	hasOptionalChainElement,
+} from './utils/index.js';
+import {removeMethodCall} from './fix/index.js';
+import {isLiteral, isMethodCall} from './ast/index.js';
 
 const ERROR_ARRAY_FROM = 'array-from';
 const ERROR_ARRAY_CONCAT = 'array-concat';
 const ERROR_ARRAY_SLICE = 'array-slice';
+const ERROR_ARRAY_TO_SPLICED = 'array-to-spliced';
 const ERROR_STRING_SPLIT = 'string-split';
 const SUGGESTION_CONCAT_ARGUMENT_IS_SPREADABLE = 'argument-is-spreadable';
 const SUGGESTION_CONCAT_ARGUMENT_IS_NOT_SPREADABLE = 'argument-is-not-spreadable';
@@ -25,6 +24,7 @@ const messages = {
 	[ERROR_ARRAY_FROM]: 'Prefer the spread operator over `Array.from(…)`.',
 	[ERROR_ARRAY_CONCAT]: 'Prefer the spread operator over `Array#concat(…)`.',
 	[ERROR_ARRAY_SLICE]: 'Prefer the spread operator over `Array#slice()`.',
+	[ERROR_ARRAY_TO_SPLICED]: 'Prefer the spread operator over `Array#toSpliced()`.',
 	[ERROR_STRING_SPLIT]: 'Prefer the spread operator over `String#split(\'\')`.',
 	[SUGGESTION_CONCAT_ARGUMENT_IS_SPREADABLE]: 'First argument is an `array`.',
 	[SUGGESTION_CONCAT_ARGUMENT_IS_NOT_SPREADABLE]: 'First argument is not an `array`.',
@@ -33,36 +33,6 @@ const messages = {
 	[SUGGESTION_USE_SPREAD]: 'Use `...` operator.',
 };
 
-const arrayFromCallSelector = [
-	methodCallSelector({
-		object: 'Array',
-		method: 'from',
-		minimumArguments: 1,
-		maximumArguments: 3,
-	}),
-	// Allow `Array.from({length})`
-	'[arguments.0.type!="ObjectExpression"]',
-].join('');
-
-const arrayConcatCallSelector = [
-	methodCallSelector('concat'),
-	not(
-		[
-			'Literal',
-			'TemplateLiteral',
-		].map(type => `[callee.object.type="${type}"]`),
-	),
-].join('');
-
-const arraySliceCallSelector = [
-	methodCallSelector({
-		method: 'slice',
-		minimumArguments: 0,
-		maximumArguments: 1,
-	}),
-	'[callee.object.type!="ArrayExpression"]',
-].join('');
-
 const ignoredSliceCallee = [
 	'arrayBuffer',
 	'blob',
@@ -70,11 +40,6 @@ const ignoredSliceCallee = [
 	'file',
 	'this',
 ];
-
-const stringSplitCallSelector = methodCallSelector({
-	method: 'split',
-	argumentsLength: 1,
-});
 
 const isArrayLiteral = node => node.type === 'ArrayExpression';
 const isArrayLiteralHasTrailingComma = (node, sourceCode) => {
@@ -97,8 +62,8 @@ function fixConcat(node, sourceCode, fixableArguments) {
 			!keepTrailingComma
 			&& isArrayLiteralHasTrailingComma(node, sourceCode)
 		) {
-			const start = node.range[0] + 1;
-			const end = sourceCode.getLastToken(node, 1).range[0];
+			const start = sourceCode.getRange(node)[0] + 1;
+			const [end] = sourceCode.getRange(sourceCode.getLastToken(node, 1));
 			return sourceCode.text.slice(start, end);
 		}
 
@@ -108,7 +73,7 @@ function fixConcat(node, sourceCode, fixableArguments) {
 	const getFixedText = () => {
 		const nonEmptyArguments = fixableArguments
 			.filter(({node, isArrayLiteral}) => (!isArrayLiteral || node.elements.length > 0));
-		const lastArgument = nonEmptyArguments[nonEmptyArguments.length - 1];
+		const lastArgument = nonEmptyArguments.at(-1);
 
 		let text = nonEmptyArguments
 			.map(({node, isArrayLiteral, isSpreadable, testArgument}) => {
@@ -123,13 +88,6 @@ function fixConcat(node, sourceCode, fixableArguments) {
 				}
 
 				if (isSpreadable) {
-					if (
-						!isParenthesized(node, sourceCode)
-						&& shouldAddParenthesesToSpreadElementArgument(node)
-					) {
-						text = `(${text})`;
-					}
-
 					text = `...${text}`;
 				}
 
@@ -168,13 +126,13 @@ function fixConcat(node, sourceCode, fixableArguments) {
 		const lastArgument = concatCallArguments[fixableArguments.length - 1];
 
 		const [start] = getParenthesizedRange(firstArgument, sourceCode);
-		let [, end] = sourceCode.getTokenAfter(lastArgument, isCommaToken).range;
+		let [, end] = sourceCode.getRange(sourceCode.getTokenAfter(lastArgument, isCommaToken));
 
 		const textAfter = sourceCode.text.slice(end);
 		const [leadingSpaces] = textAfter.match(/^\s*/);
 		end += leadingSpaces.length;
 
-		return fixer.replaceTextRange([start, end], '');
+		return fixer.removeRange([start, end]);
 	}
 
 	return function * (fixer) {
@@ -251,23 +209,9 @@ function fixArrayFrom(node, sourceCode) {
 		}
 
 		const [start, end] = getParenthesizedRange(object, sourceCode);
-		let text = sourceCode.text.slice(start, end);
-
-		if (
-			!isParenthesized(object, sourceCode)
-			&& shouldAddParenthesesToSpreadElementArgument(object)
-		) {
-			text = `(${text})`;
-		}
+		const text = sourceCode.text.slice(start, end);
 
 		return `[...${text}]`;
-	}
-
-	function * removeObject(fixer) {
-		yield * replaceNodeOrTokenAndSpacesBefore(object, '', fixer, sourceCode);
-		const commaToken = sourceCode.getTokenAfter(object, isCommaToken);
-		yield * replaceNodeOrTokenAndSpacesBefore(commaToken, '', fixer, sourceCode);
-		yield removeSpacesAfter(commaToken, sourceCode, fixer);
 	}
 
 	return function * (fixer) {
@@ -278,15 +222,7 @@ function fixArrayFrom(node, sourceCode) {
 
 		const objectText = getObjectText();
 
-		if (node.arguments.length === 1) {
-			yield fixer.replaceText(node, objectText);
-			return;
-		}
-
-		// `Array.from(object, mapFunction, thisArgument)` -> `[...object].map(mapFunction, thisArgument)`
-		yield fixer.replaceText(node.callee.object, objectText);
-		yield fixer.replaceText(node.callee.property, 'map');
-		yield * removeObject(fixer);
+		yield fixer.replaceText(node, objectText);
 	};
 }
 
@@ -320,172 +256,263 @@ function isClassName(node) {
 	return /^[A-Z]./.test(name) && name.toUpperCase() !== name;
 }
 
+function isNotArray(node, scope) {
+	if (
+		node.type === 'TemplateLiteral'
+		|| node.type === 'Literal'
+		|| node.type === 'BinaryExpression'
+		|| isClassName(node)
+		// `foo.join()`
+		|| (isMethodNamed(node, 'join') && node.arguments.length <= 1)
+	) {
+		return true;
+	}
+
+	const staticValue = getStaticValue(node, scope);
+	if (staticValue && !Array.isArray(staticValue.value)) {
+		return true;
+	}
+
+	return false;
+}
+
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
-	return {
-		[arrayFromCallSelector](node) {
+	// `Array.from()`
+	context.on('CallExpression', node => {
+		if (
+			isMethodCall(node, {
+				object: 'Array',
+				method: 'from',
+				argumentsLength: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			// Allow `Array.from({length})`
+			&& node.arguments[0].type !== 'ObjectExpression'
+		) {
 			return {
 				node,
 				messageId: ERROR_ARRAY_FROM,
 				fix: fixArrayFrom(node, sourceCode),
 			};
-		},
-		[arrayConcatCallSelector](node) {
-			const {object} = node.callee;
+		}
+	});
 
-			if (isClassName(object)) {
-				return;
-			}
+	// `array.concat()`
+	context.on('CallExpression', node => {
+		if (!isMethodCall(node, {
+			method: 'concat',
+			optionalCall: false,
+			optionalMember: false,
+		})) {
+			return;
+		}
 
-			const scope = context.getScope();
-			const staticResult = getStaticValue(object, scope);
+		const {object} = node.callee;
+		const scope = sourceCode.getScope(object);
 
-			if (staticResult && !Array.isArray(staticResult.value)) {
-				return;
-			}
+		if (isNotArray(object, scope)) {
+			return;
+		}
 
-			const problem = {
-				node: node.callee.property,
-				messageId: ERROR_ARRAY_CONCAT,
-			};
+		const staticResult = getStaticValue(object, scope);
+		if (staticResult && !Array.isArray(staticResult.value)) {
+			return;
+		}
 
-			const fixableArguments = getConcatFixableArguments(node.arguments, scope);
+		const problem = {
+			node: node.callee.property,
+			messageId: ERROR_ARRAY_CONCAT,
+		};
 
-			if (fixableArguments.length > 0 || node.arguments.length === 0) {
-				problem.fix = fixConcat(node, sourceCode, fixableArguments);
-				return problem;
-			}
+		const fixableArguments = getConcatFixableArguments(node.arguments, scope);
 
-			const [firstArgument, ...restArguments] = node.arguments;
-			if (firstArgument.type === 'SpreadElement') {
-				return problem;
-			}
+		if (fixableArguments.length > 0 || node.arguments.length === 0) {
+			problem.fix = fixConcat(node, sourceCode, fixableArguments);
+			return problem;
+		}
 
-			const fixableArgumentsAfterFirstArgument = getConcatFixableArguments(restArguments, scope);
-			const suggestions = [
-				{
-					messageId: SUGGESTION_CONCAT_ARGUMENT_IS_SPREADABLE,
-					isSpreadable: true,
-				},
-				{
-					messageId: SUGGESTION_CONCAT_ARGUMENT_IS_NOT_SPREADABLE,
-					isSpreadable: false,
-				},
-			];
+		const [firstArgument, ...restArguments] = node.arguments;
+		if (firstArgument.type === 'SpreadElement') {
+			return problem;
+		}
 
-			if (!hasSideEffect(firstArgument, sourceCode)) {
-				suggestions.push({
-					messageId: SUGGESTION_CONCAT_TEST_ARGUMENT,
-					testArgument: true,
-				});
-			}
+		const fixableArgumentsAfterFirstArgument = getConcatFixableArguments(restArguments, scope);
+		const suggestions = [
+			{
+				messageId: SUGGESTION_CONCAT_ARGUMENT_IS_SPREADABLE,
+				isSpreadable: true,
+			},
+			{
+				messageId: SUGGESTION_CONCAT_ARGUMENT_IS_NOT_SPREADABLE,
+				isSpreadable: false,
+			},
+		];
 
-			problem.suggest = suggestions.map(({messageId, isSpreadable, testArgument}) => ({
-				messageId,
+		if (!hasSideEffect(firstArgument, sourceCode)) {
+			suggestions.push({
+				messageId: SUGGESTION_CONCAT_TEST_ARGUMENT,
+				testArgument: true,
+			});
+		}
+
+		problem.suggest = suggestions.map(({messageId, isSpreadable, testArgument}) => ({
+			messageId,
+			fix: fixConcat(
+				node,
+				sourceCode,
+				// When apply suggestion, we also merge fixable arguments after the first one
+				[
+					{
+						node: firstArgument,
+						isSpreadable,
+						testArgument,
+					},
+					...fixableArgumentsAfterFirstArgument,
+				],
+			),
+		}));
+
+		if (
+			fixableArgumentsAfterFirstArgument.length < restArguments.length
+			&& restArguments.every(({type}) => type !== 'SpreadElement')
+		) {
+			problem.suggest.push({
+				messageId: SUGGESTION_CONCAT_SPREAD_ALL_ARGUMENTS,
 				fix: fixConcat(
 					node,
 					sourceCode,
-					// When apply suggestion, we also merge fixable arguments after the first one
-					[
-						{
-							node: firstArgument,
-							isSpreadable,
-							testArgument,
-						},
-						...fixableArgumentsAfterFirstArgument,
-					],
+					node.arguments.map(node => getConcatArgumentSpreadable(node, scope) || {node, isSpreadable: true}),
 				),
-			}));
+			});
+		}
 
-			if (
-				fixableArgumentsAfterFirstArgument.length < restArguments.length
-				&& restArguments.every(({type}) => type !== 'SpreadElement')
-			) {
-				problem.suggest.push({
-					messageId: SUGGESTION_CONCAT_SPREAD_ALL_ARGUMENTS,
-					fix: fixConcat(
-						node,
-						sourceCode,
-						node.arguments.map(node => getConcatArgumentSpreadable(node, scope) || {node, isSpreadable: true}),
-					),
-				});
-			}
+		return problem;
+	});
 
-			return problem;
-		},
-		[arraySliceCallSelector](node) {
-			if (isNodeMatches(node.callee.object, ignoredSliceCallee)) {
+	// `array.slice()`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'slice',
+				minimumArguments: 0,
+				maximumArguments: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& !isArrayLiteral(node.callee.object)
+			&& !hasOptionalChainElement(node.callee.object)
+		)) {
+			return;
+		}
+
+		if (isNodeMatches(node.callee.object, ignoredSliceCallee)) {
+			return;
+		}
+
+		const [firstArgument] = node.arguments;
+		if (firstArgument && !isLiteral(firstArgument, 0)) {
+			return;
+		}
+
+		return {
+			node: node.callee.property,
+			messageId: ERROR_ARRAY_SLICE,
+			fix: methodCallToSpread(node, sourceCode),
+		};
+	});
+
+	// `array.toSpliced()`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'toSpliced',
+				argumentsLength: 0,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& node.callee.object.type !== 'ArrayExpression'
+		)) {
+			return;
+		}
+
+		return {
+			node: node.callee.property,
+			messageId: ERROR_ARRAY_TO_SPLICED,
+			fix: methodCallToSpread(node, sourceCode),
+		};
+	});
+
+	// `string.split()`
+	context.on('CallExpression', node => {
+		if (!isMethodCall(node, {
+			method: 'split',
+			argumentsLength: 1,
+			optionalCall: false,
+			optionalMember: false,
+		})) {
+			return;
+		}
+
+		const [separator] = node.arguments;
+		if (!isLiteral(separator, '')) {
+			return;
+		}
+
+		const string = node.callee.object;
+		const staticValue = getStaticValue(string, sourceCode.getScope(string));
+		let hasSameResult = false;
+		if (staticValue) {
+			const {value} = staticValue;
+
+			if (typeof value !== 'string') {
 				return;
 			}
 
-			const [firstArgument] = node.arguments;
-			if (firstArgument && !isLiteralValue(firstArgument, 0)) {
-				return;
-			}
+			// eslint-disable-next-line unicorn/prefer-spread
+			const resultBySplit = value.split('');
+			const resultBySpread = [...value];
 
-			return {
-				node: node.callee.property,
-				messageId: ERROR_ARRAY_SLICE,
-				fix: methodCallToSpread(node, sourceCode),
-			};
-		},
-		[stringSplitCallSelector](node) {
-			const [separator] = node.arguments;
-			if (!isLiteralValue(separator, '')) {
-				return;
-			}
+			hasSameResult = resultBySplit.length === resultBySpread.length
+				&& resultBySplit.every((character, index) => character === resultBySpread[index]);
+		}
 
-			const string = node.callee.object;
-			const staticValue = getStaticValue(string, context.getScope());
-			let hasSameResult = false;
-			if (staticValue) {
-				const {value} = staticValue;
+		const problem = {
+			node: node.callee.property,
+			messageId: ERROR_STRING_SPLIT,
+		};
 
-				if (typeof value !== 'string') {
-					return;
-				}
+		if (hasSameResult) {
+			problem.fix = methodCallToSpread(node, sourceCode);
+		} else {
+			problem.suggest = [
+				{
+					messageId: SUGGESTION_USE_SPREAD,
+					fix: methodCallToSpread(node, sourceCode),
+				},
+			];
+		}
 
-				// eslint-disable-next-line unicorn/prefer-spread
-				const resultBySplit = value.split('');
-				const resultBySpread = [...value];
-
-				hasSameResult = resultBySplit.length === resultBySpread.length
-					&& resultBySplit.every((character, index) => character === resultBySpread[index]);
-			}
-
-			const problem = {
-				node: node.callee.property,
-				messageId: ERROR_STRING_SPLIT,
-			};
-
-			if (hasSameResult) {
-				problem.fix = methodCallToSpread(node, sourceCode);
-			} else {
-				problem.suggest = [
-					{
-						messageId: SUGGESTION_USE_SPREAD,
-						fix: methodCallToSpread(node, sourceCode),
-					},
-				];
-			}
-
-			return problem;
-		},
-	};
+		return problem;
+	});
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Prefer the spread operator over `Array.from(…)`, `Array#concat(…)`, `Array#slice()` and `String#split(\'\')`.',
+			description: 'Prefer the spread operator over `Array.from(…)`, `Array#concat(…)`, `Array#{slice,toSpliced}()` and `String#split(\'\')`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		messages,
 	},
 };
+
+export default config;

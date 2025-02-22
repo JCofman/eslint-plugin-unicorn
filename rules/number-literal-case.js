@@ -1,6 +1,5 @@
-'use strict';
-const {checkVueTemplate} = require('./utils/rule.js');
-const {isNumber, isBigInt} = require('./utils/numeric.js');
+import {checkVueTemplate} from './utils/rule.js';
+import {isNumberLiteral, isBigIntLiteral} from './ast/index.js';
 
 const MESSAGE_ID = 'number-literal-case';
 const messages = {
@@ -18,13 +17,13 @@ const fix = raw => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = () => ({
-	Literal: node => {
+	Literal(node) {
 		const {raw} = node;
 
 		let fixed = raw;
-		if (isNumber(node)) {
+		if (isNumberLiteral(node)) {
 			fixed = fix(raw);
-		} else if (isBigInt(node)) {
+		} else if (isBigIntLiteral(node)) {
 			fixed = fix(raw.slice(0, -1)) + 'n';
 		}
 
@@ -39,14 +38,17 @@ const create = () => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create: checkVueTemplate(create),
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Enforce proper case for numeric literals.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

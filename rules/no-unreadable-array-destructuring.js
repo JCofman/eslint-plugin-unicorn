@@ -1,7 +1,6 @@
-'use strict';
-const {isParenthesized} = require('eslint-utils');
-const shouldAddParenthesesToMemberExpressionObject = require('./utils/should-add-parentheses-to-member-expression-object.js');
-const {fixSpaceAroundKeyword} = require('./fix/index.js');
+import {isParenthesized} from '@eslint-community/eslint-utils';
+import shouldAddParenthesesToMemberExpressionObject from './utils/should-add-parentheses-to-member-expression-object.js';
+import {fixSpaceAroundKeyword} from './fix/index.js';
 
 const MESSAGE_ID = 'no-unreadable-array-destructuring';
 const messages = {
@@ -13,13 +12,15 @@ const isCommaFollowedWithComma = (element, index, array) =>
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	return {
-		'ArrayPattern[elements.length>=3]'(node) {
+		ArrayPattern(node) {
 			const {elements, parent} = node;
 
-			if (!elements.some((element, index, elements) => isCommaFollowedWithComma(element, index, elements))) {
+			if (
+				elements.length < 3
+				|| !elements.some((element, index, elements) => isCommaFollowedWithComma(element, index, elements))) {
 				return;
 			}
 
@@ -68,14 +69,17 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow unreadable array destructuring.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

@@ -1,19 +1,26 @@
 # Prevent passing a function reference directly to iterator methods
 
-✅ *This rule is part of the [recommended](https://github.com/sindresorhus/eslint-plugin-unicorn#recommended-config) config.*
+💼 This rule is enabled in the ✅ `recommended` [config](https://github.com/sindresorhus/eslint-plugin-unicorn#preset-configs-eslintconfigjs).
 
-💡 *This rule provides [suggestions](https://eslint.org/docs/developer-guide/working-with-rules#providing-suggestions).*
+💡 This rule is manually fixable by [editor suggestions](https://eslint.org/docs/latest/use/core-concepts#rule-suggestions).
+
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
+
+Passing functions to iterator methods can cause issues when the function is changed without realizing that the iterator passes 2 more parameters to it. **This also applies when using TypeScript,** albeit only if the function accepts the same parameter type used by the iterator method.
 
 Suppose you have a `unicorn` module:
 
 ```js
-module.exports = x => x + 1;
+const unicorn = x => x + 1;
+
+export default unicorn;
 ```
 
 You can then use it like this:
 
 ```js
-const unicorn = require('unicorn');
+import unicorn from 'unicorn';
 
 [1, 2, 3].map(unicorn);
 //=> [2, 3, 4]
@@ -22,16 +29,27 @@ const unicorn = require('unicorn');
 The `unicorn` module now does a minor version that adds another argument:
 
 ```js
-module.exports = (x, y) => x + (y ? y : 1);
+const unicorn = (x, y) => x + (y ? y : 1);
+
+export default unicorn;
 ```
 
 Your code will now return something different and probably break for users because it is now passing the index of the item as second argument.
 
 ```js
-const unicorn = require('unicorn');
+import unicorn from 'unicorn';
 
 [1, 2, 3].map(unicorn);
 //=> [2, 3, 5]
+```
+
+This rule helps safely call the function with the expected number of parameters:
+
+```js
+import unicorn from 'unicorn';
+
+[1, 2, 3].map(x => unicorn(x));
+//=> [2, 3, 4]
 ```
 
 ## Fail

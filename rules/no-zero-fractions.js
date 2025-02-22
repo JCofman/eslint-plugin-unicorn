@@ -1,9 +1,9 @@
-'use strict';
-const {isParenthesized} = require('eslint-utils');
-const needsSemicolon = require('./utils/needs-semicolon.js');
-const {isNumber, isDecimalInteger} = require('./utils/numeric.js');
-const toLocation = require('./utils/to-location.js');
-const {fixSpaceAroundKeyword} = require('./fix/index.js');
+import {isParenthesized} from '@eslint-community/eslint-utils';
+import needsSemicolon from './utils/needs-semicolon.js';
+import {isDecimalInteger} from './utils/numeric.js';
+import toLocation from './utils/to-location.js';
+import {fixSpaceAroundKeyword} from './fix/index.js';
+import {isNumberLiteral} from './ast/index.js';
 
 const MESSAGE_ZERO_FRACTION = 'zero-fraction';
 const MESSAGE_DANGLING_DOT = 'dangling-dot';
@@ -14,8 +14,8 @@ const messages = {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => ({
-	Literal: node => {
-		if (!isNumber(node)) {
+	Literal(node) {
+		if (!isNumberLiteral(node)) {
 			return;
 		}
 
@@ -27,7 +27,7 @@ const create = context => ({
 		}
 
 		const {before, dotAndFractions, after} = match.groups;
-		const fixedDotAndFractions = dotAndFractions.replace(/[.0_]+$/g, '');
+		const fixedDotAndFractions = dotAndFractions.replaceAll(/[.0_]+$/g, '');
 		const formatted = ((before + fixedDotAndFractions) || '0') + after;
 
 		if (formatted === raw) {
@@ -35,10 +35,10 @@ const create = context => ({
 		}
 
 		const isDanglingDot = dotAndFractions === '.';
+		const {sourceCode} = context;
 		// End of fractions
-		const end = node.range[0] + before.length + dotAndFractions.length;
+		const end = sourceCode.getRange(node)[0] + before.length + dotAndFractions.length;
 		const start = end - (raw.length - formatted.length);
-		const sourceCode = context.getSourceCode();
 		return {
 			loc: toLocation([start, end], sourceCode),
 			messageId: isDanglingDot ? MESSAGE_DANGLING_DOT : MESSAGE_ZERO_FRACTION,
@@ -65,14 +65,17 @@ const create = context => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow number literals with zero fractions or dangling dots.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

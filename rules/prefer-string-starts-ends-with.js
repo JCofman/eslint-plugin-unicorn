@@ -1,10 +1,9 @@
-'use strict';
-const {isParenthesized, getStaticValue} = require('eslint-utils');
-const {methodCallSelector} = require('./selectors/index.js');
-const quoteString = require('./utils/quote-string.js');
-const shouldAddParenthesesToMemberExpressionObject = require('./utils/should-add-parentheses-to-member-expression-object.js');
-const shouldAddParenthesesToLogicalExpressionChild = require('./utils/should-add-parentheses-to-logical-expression-child.js');
-const {getParenthesizedText, getParenthesizedRange} = require('./utils/parentheses.js');
+import {isParenthesized, getStaticValue} from '@eslint-community/eslint-utils';
+import escapeString from './utils/escape-string.js';
+import shouldAddParenthesesToMemberExpressionObject from './utils/should-add-parentheses-to-member-expression-object.js';
+import shouldAddParenthesesToLogicalExpressionChild from './utils/should-add-parentheses-to-logical-expression-child.js';
+import {getParenthesizedText, getParenthesizedRange} from './utils/parentheses.js';
+import {isMethodCall, isRegexLiteral} from './ast/index.js';
 
 const MESSAGE_STARTS_WITH = 'prefer-starts-with';
 const MESSAGE_ENDS_WITH = 'prefer-ends-with';
@@ -25,11 +24,6 @@ const isSimpleString = string => doesNotContain(
 	['^', '$', '+', '[', '{', '(', '\\', '.', '?', '*', '|'],
 );
 const addParentheses = text => `(${text})`;
-
-const regexTestSelector = [
-	methodCallSelector({method: 'test', argumentsLength: 1}),
-	'[callee.object.regex]',
-].join('');
 
 const checkRegex = ({pattern, flags}) => {
 	if (flags.includes('i') || flags.includes('m')) {
@@ -61,10 +55,22 @@ const checkRegex = ({pattern, flags}) => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	return {
-		[regexTestSelector](node) {
+		CallExpression(node) {
+			if (
+				!isMethodCall(node, {
+					method: 'test',
+					argumentsLength: 1,
+					optionalCall: false,
+					optionalMember: false,
+				})
+				|| !isRegexLiteral(node.callee.object)
+			) {
+				return;
+			}
+
 			const regexNode = node.callee.object;
 			const {regex} = regexNode;
 			const result = checkRegex(regex);
@@ -83,7 +89,7 @@ const create = context => {
 				);
 			let isNonString = false;
 			if (!isString) {
-				const staticValue = getStaticValue(target, context.getScope());
+				const staticValue = getStaticValue(target, sourceCode.getScope(target));
 
 				if (staticValue) {
 					isString = typeof staticValue.value === 'string';
@@ -103,7 +109,7 @@ const create = context => {
 
 				switch (fixType) {
 					// Goal: `(target ?? '').startsWith(pattern)`
-					case FIX_TYPE_NULLISH_COALESCING:
+					case FIX_TYPE_NULLISH_COALESCING: {
 						if (
 							!isTargetParenthesized
 							&& shouldAddParenthesesToLogicalExpressionChild(target, {operator: '??', property: 'left'})
@@ -120,20 +126,24 @@ const create = context => {
 						}
 
 						break;
+					}
 
 					// Goal: `String(target).startsWith(pattern)`
-					case FIX_TYPE_STRING_CASTING:
+					case FIX_TYPE_STRING_CASTING: {
 						// `target` was a call argument, don't need check parentheses
 						targetText = `String(${targetText})`;
 						// `CallExpression` don't need add parentheses to call `.startsWith()`
 						break;
+					}
 
 					// Goal: `target.startsWith(pattern)` or `target?.startsWith(pattern)`
-					case FIX_TYPE_OPTIONAL_CHAINING:
+					case FIX_TYPE_OPTIONAL_CHAINING: {
 						// Optional chaining: `target.startsWith` => `target?.startsWith`
 						yield fixer.replaceText(sourceCode.getTokenBefore(node.callee.property), '?.');
-						// Fallthrough
-					default:
+					}
+
+					// Fallthrough
+					default: {
 						if (
 							!isRegexParenthesized
 							&& !isTargetParenthesized
@@ -141,6 +151,7 @@ const create = context => {
 						) {
 							targetText = addParentheses(targetText);
 						}
+					}
 				}
 
 				// The regex literal always starts with `/` or `(`, so we don't need check ASI
@@ -152,7 +163,7 @@ const create = context => {
 				yield fixer.replaceText(node.callee.property, method);
 
 				// Replace argument with result.string
-				yield fixer.replaceTextRange(getParenthesizedRange(target, sourceCode), quoteString(result.string));
+				yield fixer.replaceTextRange(getParenthesizedRange(target, sourceCode), escapeString(result.string));
 			}
 
 			if (isString || !isNonString) {
@@ -173,15 +184,18 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `String#startsWith()` & `String#endsWith()` over `RegExp#test()`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		messages,
 	},
 };
+
+export default config;

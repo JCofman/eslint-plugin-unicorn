@@ -1,7 +1,6 @@
-'use strict';
-const {getStaticValue} = require('eslint-utils');
+import {getStaticValue} from '@eslint-community/eslint-utils';
 
-// Copied from https://github.com/eslint/eslint/blob/c3e9accce2f61b04ab699fd37c90703305281aa3/lib/rules/utils/ast-utils.js#L379
+// Copied from https://github.com/eslint/eslint/blob/94ba68d76a6940f68ff82eea7332c6505f93df76/lib/rules/utils/ast-utils.js#L392
 
 /**
 Gets the property name of a given node.
@@ -36,22 +35,25 @@ For examples:
 function getStaticPropertyName(node) {
 	let property;
 
-	switch (node && node.type) {
-		case 'MemberExpression':
+	switch (node?.type) {
+		case 'MemberExpression': {
 			property = node.property;
 			break;
+		}
 
-		/* istanbul ignore next: Hard to test */
-		case 'ChainExpression':
+		/* c8 ignore next 2 */
+		case 'ChainExpression': {
 			return getStaticPropertyName(node.expression);
+		}
 
-		/* istanbul ignore next: Only reachable when use this to get class/object member key */
+		// Only reachable when use this to get class/object member key
+		/* c8 ignore next */
 		case 'Property':
-		case 'MethodDefinition':
-			/* istanbul ignore next */
+		case 'MethodDefinition': {
+			/* c8 ignore next 2 */
 			property = node.key;
-			/* istanbul ignore next */
 			break;
+		}
 
 			// No default
 	}
@@ -105,7 +107,7 @@ Check if two expressions reference the same value. For example:
 @param {ASTNode} right The right side of the comparison.
 @returns {boolean} `true` if both sides match and reference the same value.
 */
-function isSameReference(left, right) {
+export default function isSameReference(left, right) {
 	if (left.type !== right.type) {
 		// Handle `a.b` and `a?.b` are samely.
 		if (left.type === 'ChainExpression') {
@@ -121,32 +123,48 @@ function isSameReference(left, right) {
 
 	switch (left.type) {
 		case 'Super':
-		case 'ThisExpression':
+		case 'ThisExpression': {
 			return true;
+		}
 
 		case 'Identifier':
+		case 'PrivateIdentifier': {
 			return left.name === right.name;
+		}
 
-		case 'Literal':
+		case 'Literal': {
 			return equalLiteralValue(left, right);
+		}
 
-		case 'ChainExpression':
+		case 'ChainExpression': {
 			return isSameReference(left.expression, right.expression);
+		}
 
 		case 'MemberExpression': {
 			const nameA = getStaticPropertyName(left);
 
-			// X.y = x["y"]
+			// `x.y = x["y"]`
+			if (nameA !== undefined) {
+				return (
+					isSameReference(left.object, right.object)
+					&& nameA === getStaticPropertyName(right)
+				);
+			}
+
+			/*
+			`x[0] = x[0]`
+			`x[y] = x[y]`
+			`x.y = x.y`
+			*/
 			return (
-				typeof nameA !== 'undefined'
+				left.computed === right.computed
 				&& isSameReference(left.object, right.object)
-				&& nameA === getStaticPropertyName(right)
+				&& isSameReference(left.property, right.property)
 			);
 		}
 
-		default:
+		default: {
 			return false;
+		}
 	}
 }
-
-module.exports = isSameReference;

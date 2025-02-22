@@ -1,22 +1,14 @@
-'use strict';
-const isLiteralValue = require('./utils/is-literal-value.js');
-const getKeyName = require('./utils/get-key-name.js');
-const {not, methodCallSelector} = require('./selectors/index.js');
+import {getPropertyName} from '@eslint-community/eslint-utils';
+import {isNullLiteral, isMethodCall} from './ast/index.js';
 
 const MESSAGE_ID = 'prefer-reflect-apply';
 const messages = {
 	[MESSAGE_ID]: 'Prefer `Reflect.apply()` over `Function#apply()`.',
 };
 
-const selector = [
-	methodCallSelector({allowComputed: true}),
-	not(['Literal', 'ArrayExpression', 'ObjectExpression'].map(type => `[callee.object.type=${type}]`)),
-].join('');
-
 const isApplySignature = (argument1, argument2) => (
 	(
-		// eslint-disable-next-line unicorn/no-null
-		isLiteralValue(argument1, null)
+		isNullLiteral(argument1)
 		|| argument1.type === 'ThisExpression'
 	)
 	&& (
@@ -31,7 +23,7 @@ const getReflectApplyCall = (sourceCode, target, receiver, argumentsList) => (
 
 const fixDirectApplyCall = (node, sourceCode) => {
 	if (
-		getKeyName(node.callee) === 'apply'
+		getPropertyName(node.callee) === 'apply'
 		&& node.arguments.length === 2
 		&& isApplySignature(node.arguments[0], node.arguments[1])
 	) {
@@ -46,11 +38,10 @@ const fixDirectApplyCall = (node, sourceCode) => {
 
 const fixFunctionPrototypeCall = (node, sourceCode) => {
 	if (
-		getKeyName(node.callee) === 'call'
-		&& getKeyName(node.callee.object) === 'apply'
-		&& getKeyName(node.callee.object.object) === 'prototype'
-		&& node.callee.object.object.object
-		&& node.callee.object.object.object.type === 'Identifier'
+		getPropertyName(node.callee) === 'call'
+		&& getPropertyName(node.callee.object) === 'apply'
+		&& getPropertyName(node.callee.object.object) === 'prototype'
+		&& node.callee.object.object.object?.type === 'Identifier'
 		&& node.callee.object.object.object.name === 'Function'
 		&& node.arguments.length === 3
 		&& isApplySignature(node.arguments[1], node.arguments[2])
@@ -66,8 +57,20 @@ const fixFunctionPrototypeCall = (node, sourceCode) => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => ({
-	[selector]: node => {
-		const sourceCode = context.getSourceCode();
+	CallExpression(node) {
+		if (
+			!isMethodCall(node, {
+				optionalCall: false,
+				optionalMember: false,
+			})
+			|| node.callee.object.type === 'Literal'
+			|| node.callee.object.type === 'ArrayExpression'
+			|| node.callee.object.type === 'ObjectExpression'
+		) {
+			return;
+		}
+
+		const {sourceCode} = context;
 		const fix = fixDirectApplyCall(node, sourceCode) || fixFunctionPrototypeCall(node, sourceCode);
 		if (fix) {
 			return {
@@ -80,14 +83,17 @@ const create = context => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `Reflect.apply()` over `Function#apply()`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

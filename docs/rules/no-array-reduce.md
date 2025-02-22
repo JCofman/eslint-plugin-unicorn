@@ -1,12 +1,15 @@
 # Disallow `Array#reduce()` and `Array#reduceRight()`
 
-✅ *This rule is part of the [recommended](https://github.com/sindresorhus/eslint-plugin-unicorn#recommended-config) config.*
+💼 This rule is enabled in the ✅ `recommended` [config](https://github.com/sindresorhus/eslint-plugin-unicorn#preset-configs-eslintconfigjs).
+
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
 
 `Array#reduce()` and `Array#reduceRight()` usually result in [hard-to-read](https://twitter.com/jaffathecake/status/1213077702300852224) and [less performant](https://www.richsnapp.com/article/2019/06-09-reduce-spread-anti-pattern) code. In almost every case, it can be replaced by `.map`, `.filter`, or a `for-of` loop.
 
 It's only somewhat useful in the rare case of summing up numbers, which is allowed by default.
 
-Use `eslint-disable` comment if you really need to use it.
+Use `eslint-disable` comment if you really need to use it or disable the rule entirely if you prefer functional programming.
 
 This rule is not fixable.
 
@@ -51,6 +54,14 @@ array.reduce((total, value) => total + value);
 let result = initialValue;
 
 for (const element of array) {
+	result += element;
+}
+```
+
+```js
+let result = initialValue;
+
+for (const element of array.toReversed()) { // Equivalent to .reduceRight()
 	result += element;
 }
 ```

@@ -1,35 +1,72 @@
-'use strict';
-const createDeprecatedRules = require('./rules/utils/create-deprecated-rules.js');
-const {loadRules} = require('./rules/utils/rule.js');
-const recommendedConfig = require('./configs/recommended.js');
-const all = require('./configs/all.js');
+import createDeprecatedRules from './rules/utils/create-deprecated-rules.js';
+import flatConfigBase from './configs/flat-config-base.js';
+import rules from './rules/index.js';
+import packageJson from './package.json' with {type: 'json'};
 
 const deprecatedRules = createDeprecatedRules({
-	// {ruleId: ReplacementRuleId | ReplacementRuleId[]}, if no replacement, use `{ruleId: []}`
-	'no-array-instanceof': 'unicorn/no-instanceof-array',
-	'no-fn-reference-in-iterator': 'unicorn/no-array-callback-reference',
-	'no-reduce': 'unicorn/no-array-reduce',
-	'prefer-dataset': 'unicorn/prefer-dom-node-dataset',
-	'prefer-event-key': 'unicorn/prefer-keyboard-event-key',
-	'prefer-exponentiation-operator': 'prefer-exponentiation-operator',
-	'prefer-flat-map': 'unicorn/prefer-array-flat-map',
-	'prefer-node-append': 'unicorn/prefer-dom-node-append',
-	'prefer-node-remove': 'unicorn/prefer-dom-node-remove',
-	'prefer-object-has-own': 'prefer-object-has-own',
-	'prefer-replace-all': 'unicorn/prefer-string-replace-all',
-	'prefer-starts-ends-with': 'unicorn/prefer-string-starts-ends-with',
-	'prefer-text-content': 'unicorn/prefer-dom-node-text-content',
-	'prefer-trim-start-end': 'unicorn/prefer-string-trim-start-end',
-	'regex-shorthand': 'unicorn/better-regex',
+	// {ruleId: {message: string, replacedBy: string[]}}
+	'no-instanceof-array': {
+		message: 'Replaced by `unicorn/no-instanceof-builtins` which covers more cases.',
+		replacedBy: ['unicorn/no-instanceof-builtins'],
+	},
 });
 
-module.exports = {
+const externalRules = {
+	// Covered by `unicorn/no-negated-condition`
+	'no-negated-condition': 'off',
+	// Covered by `unicorn/no-nested-ternary`
+	'no-nested-ternary': 'off',
+};
+
+const recommendedRules = Object.fromEntries(
+	Object.entries(rules).map(([id, rule]) => [
+		`unicorn/${id}`,
+		rule.meta.docs.recommended ? 'error' : 'off',
+	]),
+);
+
+const allRules = Object.fromEntries(
+	Object.keys(rules).map(id => [
+		`unicorn/${id}`,
+		'error',
+	]),
+);
+
+const createConfig = (rules, flatConfigName) => ({
+	...flatConfigBase,
+	name: flatConfigName,
+	plugins: {
+		unicorn,
+	},
 	rules: {
-		...loadRules(),
+		...externalRules,
+		...rules,
+	},
+});
+
+const unicorn = {
+	meta: {
+		name: packageJson.name,
+		version: packageJson.version,
+	},
+	rules: {
+		...rules,
 		...deprecatedRules,
 	},
-	configs: {
-		recommended: recommendedConfig,
-		all,
-	},
 };
+
+const configs = {
+	recommended: createConfig(recommendedRules, 'unicorn/recommended'),
+	all: createConfig(allRules, 'unicorn/all'),
+
+	// TODO: Remove this at some point. Kept for now to avoid breaking users.
+	'flat/recommended': createConfig(recommendedRules, 'unicorn/flat/recommended'),
+	'flat/all': createConfig(allRules, 'unicorn/flat/all'),
+};
+
+const allConfigs = {
+	...unicorn,
+	configs,
+};
+
+export default allConfigs;

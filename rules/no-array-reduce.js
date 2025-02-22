@@ -1,39 +1,78 @@
-'use strict';
-const {get} = require('lodash');
-const {methodCallSelector} = require('./selectors/index.js');
-const {arrayPrototypeMethodSelector, notFunctionSelector, matches} = require('./selectors/index.js');
+import {isMethodCall} from './ast/index.js';
+import {isNodeValueNotFunction, isArrayPrototypeProperty} from './utils/index.js';
 
-const MESSAGE_ID = 'no-reduce';
+const MESSAGE_ID_REDUCE = 'reduce';
+const MESSAGE_ID_REDUCE_RIGHT = 'reduceRight';
 const messages = {
-	[MESSAGE_ID]: '`Array#{{method}}()` is not allowed',
+	[MESSAGE_ID_REDUCE]: '`Array#reduce()` is not allowed. Prefer other types of loop for readability.',
+	[MESSAGE_ID_REDUCE_RIGHT]: '`Array#reduceRight()` is not allowed. Prefer other types of loop for readability. You may want to call `Array#toReversed()` before looping it.',
 };
 
-const prototypeSelector = method => [
-	methodCallSelector(method),
-	arrayPrototypeMethodSelector({
-		path: 'callee.object',
-		methods: ['reduce', 'reduceRight'],
-	}),
-].join('');
-const selector = matches([
+const cases = [
 	// `array.{reduce,reduceRight}()`
-	[
-		methodCallSelector({methods: ['reduce', 'reduceRight'], minimumArguments: 1, maximumArguments: 2}),
-		notFunctionSelector('arguments.0'),
-		' > .callee > .property',
-	].join(''),
+	{
+		test: callExpression =>
+			isMethodCall(callExpression, {
+				methods: ['reduce', 'reduceRight'],
+				minimumArguments: 1,
+				maximumArguments: 2,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& !isNodeValueNotFunction(callExpression.arguments[0]),
+		getMethodNode: callExpression => callExpression.callee.property,
+		isSimpleOperation(callExpression) {
+			const [callback] = callExpression.arguments;
+
+			return (
+				callback
+				&& (
+					// `array.reduce((accumulator, element) => accumulator + element)`
+					(callback.type === 'ArrowFunctionExpression' && callback.body.type === 'BinaryExpression')
+					// `array.reduce((accumulator, element) => {return accumulator + element;})`
+					// `array.reduce(function (accumulator, element){return accumulator + element;})`
+					|| (
+						(callback.type === 'ArrowFunctionExpression' || callback.type === 'FunctionExpression')
+						&& callback.body.type === 'BlockStatement'
+						&& callback.body.body.length === 1
+						&& callback.body.body[0].type === 'ReturnStatement'
+						&& callback.body.body[0].argument.type === 'BinaryExpression'
+					)
+				)
+			);
+		},
+	},
 	// `[].{reduce,reduceRight}.call()` and `Array.{reduce,reduceRight}.call()`
-	[
-		prototypeSelector('call'),
-		notFunctionSelector('arguments.1'),
-		' > .callee > .object > .property',
-	].join(''),
+	{
+		test: callExpression =>
+			isMethodCall(callExpression, {
+				method: 'call',
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& isArrayPrototypeProperty(callExpression.callee.object, {
+				properties: ['reduce', 'reduceRight'],
+			})
+			&& (
+				!callExpression.arguments[1]
+				|| !isNodeValueNotFunction(callExpression.arguments[1])
+			),
+		getMethodNode: callExpression => callExpression.callee.object.property,
+	},
 	// `[].{reduce,reduceRight}.apply()` and `Array.{reduce,reduceRight}.apply()`
-	[
-		prototypeSelector('apply'),
-		' > .callee > .object > .property',
-	].join(''),
-]);
+	{
+		test: callExpression =>
+			isMethodCall(callExpression, {
+				method: 'apply',
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& isArrayPrototypeProperty(callExpression.callee.object, {
+				properties: ['reduce', 'reduceRight'],
+			}),
+		getMethodNode: callExpression => callExpression.callee.object.property,
+	},
+];
 
 const schema = [
 	{
@@ -42,7 +81,6 @@ const schema = [
 		properties: {
 			allowSimpleOperations: {
 				type: 'boolean',
-				default: true,
 			},
 		},
 	},
@@ -53,44 +91,39 @@ const create = context => {
 	const {allowSimpleOperations} = {allowSimpleOperations: true, ...context.options[0]};
 
 	return {
-		[selector](node) {
-			const callback = get(node, 'parent.parent.arguments[0]', {});
-			const problem = {
-				node,
-				messageId: MESSAGE_ID,
-				data: {method: node.name},
-			};
+		* CallExpression(callExpression) {
+			for (const {test, getMethodNode, isSimpleOperation} of cases) {
+				if (!test(callExpression)) {
+					continue;
+				}
 
-			if (!allowSimpleOperations) {
-				return problem;
+				if (allowSimpleOperations && isSimpleOperation?.(callExpression)) {
+					continue;
+				}
+
+				const methodNode = getMethodNode(callExpression);
+				yield {
+					node: methodNode,
+					messageId: methodNode.name,
+				};
 			}
-
-			if (callback.type === 'ArrowFunctionExpression' && callback.body.type === 'BinaryExpression') {
-				return;
-			}
-
-			if ((callback.type === 'ArrowFunctionExpression' || callback.type === 'FunctionExpression')
-				&& callback.body.type === 'BlockStatement'
-				&& callback.body.body.length === 1
-				&& callback.body.body[0].type === 'ReturnStatement'
-				&& callback.body.body[0].argument.type === 'BinaryExpression') {
-				return;
-			}
-
-			return problem;
 		},
 	};
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow `Array#reduce()` and `Array#reduceRight()`.',
+			recommended: true,
 		},
 		schema,
+		defaultOptions: [{allowSimpleOperations: true}],
 		messages,
 	},
 };
+
+export default config;

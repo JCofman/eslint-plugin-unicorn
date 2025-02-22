@@ -1,32 +1,44 @@
-'use strict';
-const {methodCallSelector, notDomNodeSelector} = require('./selectors/index.js');
+import {isNodeValueNotDomNode} from './utils/index.js';
+import {isMethodCall, isStringLiteral, isNullLiteral} from './ast/index.js';
 
 const MESSAGE_ID = 'prefer-query-selector';
 const messages = {
 	[MESSAGE_ID]: 'Prefer `.{{replacement}}()` over `.{{method}}()`.',
 };
 
-const selector = [
-	methodCallSelector({
-		methods: ['getElementById', 'getElementsByClassName', 'getElementsByTagName'],
-		argumentsLength: 1,
-	}),
-	notDomNodeSelector('callee.object'),
-].join('');
-
-const forbiddenIdentifierNames = new Map([
+const disallowedIdentifierNames = new Map([
 	['getElementById', 'querySelector'],
 	['getElementsByClassName', 'querySelectorAll'],
 	['getElementsByTagName', 'querySelectorAll'],
+	['getElementsByName', 'querySelectorAll'],
 ]);
 
 const getReplacementForId = value => `#${value}`;
 const getReplacementForClass = value => value.match(/\S+/g).map(className => `.${className}`).join('');
+const getReplacementForName = (value, originQuote) => `[name=${wrapQuoted(value, originQuote)}]`;
 
 const getQuotedReplacement = (node, value) => {
 	const leftQuote = node.raw.charAt(0);
-	const rightQuote = node.raw.charAt(node.raw.length - 1);
+	const rightQuote = node.raw.at(-1);
 	return `${leftQuote}${value}${rightQuote}`;
+};
+
+const wrapQuoted = (value, originalQuote) => {
+	switch (originalQuote) {
+		case '\'': {
+			return `"${value}"`;
+		}
+
+		case '"': {
+			return `'${value}'`;
+		}
+
+		case '`': {
+			return `'${value}'`;
+		}
+
+		// No default
+	}
 };
 
 function * getLiteralFix(fixer, node, identifierName) {
@@ -37,6 +49,11 @@ function * getLiteralFix(fixer, node, identifierName) {
 
 	if (identifierName === 'getElementsByClassName') {
 		replacement = getQuotedReplacement(node, getReplacementForClass(node.value));
+	}
+
+	if (identifierName === 'getElementsByName') {
+		const quoted = node.raw.charAt(0);
+		replacement = getQuotedReplacement(node, getReplacementForName(node.value, quoted));
 	}
 
 	yield fixer.replaceText(node, replacement);
@@ -60,23 +77,25 @@ function * getTemplateLiteralFix(fixer, node, identifierName) {
 				getReplacementForClass(templateElement.value.cooked),
 			);
 		}
+
+		if (identifierName === 'getElementsByName') {
+			const quoted = node.raw ? node.raw.charAt(0) : '"';
+			yield fixer.replaceText(
+				templateElement,
+				getReplacementForName(templateElement.value.cooked, quoted),
+			);
+		}
 	}
 }
 
-const canBeFixed = node => {
-	if (node.type === 'Literal') {
-		return node.raw === 'null' || (typeof node.value === 'string' && Boolean(node.value.trim()));
-	}
-
-	if (node.type === 'TemplateLiteral') {
-		return (
-			node.expressions.length === 0
-			&& node.quasis.some(templateElement => templateElement.value.cooked.trim())
-		);
-	}
-
-	return false;
-};
+const canBeFixed = node =>
+	isNullLiteral(node)
+	|| (isStringLiteral(node) && Boolean(node.value.trim()))
+	|| (
+		node.type === 'TemplateLiteral'
+		&& node.expressions.length === 0
+		&& node.quasis.some(templateElement => templateElement.value.cooked.trim())
+	);
 
 const hasValue = node => {
 	if (node.type === 'Literal') {
@@ -101,9 +120,21 @@ const fix = (node, identifierName, preferredSelector) => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = () => ({
-	[selector](node) {
+	CallExpression(node) {
+		if (
+			!isMethodCall(node, {
+				methods: ['getElementById', 'getElementsByClassName', 'getElementsByTagName', 'getElementsByName'],
+				argumentsLength: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			|| isNodeValueNotDomNode(node.callee.object)
+		) {
+			return;
+		}
+
 		const method = node.callee.property.name;
-		const preferredSelector = forbiddenIdentifierNames.get(method);
+		const preferredSelector = disallowedIdentifierNames.get(method);
 
 		const problem = {
 			node: node.callee.property,
@@ -123,14 +154,17 @@ const create = () => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Prefer `.querySelector()` over `.getElementById()`, `.querySelectorAll()` over `.getElementsByClassName()` and `.getElementsByTagName()`.',
+			description: 'Prefer `.querySelector()` over `.getElementById()`, `.querySelectorAll()` over `.getElementsByClassName()` and `.getElementsByTagName()` and `.getElementsByName()`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

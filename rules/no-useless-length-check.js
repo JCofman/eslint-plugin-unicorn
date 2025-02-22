@@ -1,36 +1,18 @@
-'use strict';
-const {methodCallSelector, matches, memberExpressionSelector} = require('./selectors/index.js');
-const isSameReference = require('./utils/is-same-reference.js');
-const {getParenthesizedRange} = require('./utils/parentheses.js');
+import {isMethodCall, isMemberExpression} from './ast/index.js';
+import {getParenthesizedRange, isSameReference, isLogicalExpression} from './utils/index.js';
 
 const messages = {
 	'non-zero': 'The non-empty check is useless as `Array#some()` returns `false` for an empty array.',
 	zero: 'The empty check is useless as `Array#every()` returns `true` for an empty array.',
 };
 
-const logicalExpressionSelector = [
-	'LogicalExpression',
-	matches(['[operator="||"]', '[operator="&&"]']),
-].join('');
 // We assume the user already follows `unicorn/explicit-length-check`. These are allowed in that rule.
-const lengthCompareZeroSelector = [
-	logicalExpressionSelector,
-	' > ',
-	'BinaryExpression',
-	memberExpressionSelector({path: 'left', property: 'length'}),
-	'[right.type="Literal"]',
-	'[right.raw="0"]',
-].join('');
-const zeroLengthCheckSelector = [
-	lengthCompareZeroSelector,
-	'[operator="==="]',
-].join('');
-const nonZeroLengthCheckSelector = [
-	lengthCompareZeroSelector,
-	matches(['[operator=">"]', '[operator="!=="]']),
-].join('');
-const arraySomeCallSelector = methodCallSelector('some');
-const arrayEveryCallSelector = methodCallSelector('every');
+const isLengthCompareZero = node =>
+	node.type === 'BinaryExpression'
+	&& node.right.type === 'Literal'
+	&& node.right.raw === '0'
+	&& isMemberExpression(node.left, {property: 'length', optional: false})
+	&& isLogicalExpression(node.parent);
 
 function flatLogicalExpression(node) {
 	return [node.left, node.right].flatMap(child =>
@@ -83,20 +65,36 @@ const create = context => {
 	}
 
 	return {
-		[zeroLengthCheckSelector](node) {
-			zeroLengthChecks.add(node);
+		BinaryExpression(node) {
+			if (isLengthCompareZero(node)) {
+				const {operator} = node;
+				if (operator === '===') {
+					zeroLengthChecks.add(node);
+				} else if (operator === '>' || operator === '!==') {
+					nonZeroLengthChecks.add(node);
+				}
+			}
 		},
-		[nonZeroLengthCheckSelector](node) {
-			nonZeroLengthChecks.add(node);
+		CallExpression(node) {
+			if (
+				isMethodCall(node, {
+					optionalCall: false,
+					optionalMember: false,
+					computed: false,
+				})
+				&& node.callee.property.type === 'Identifier'
+			) {
+				if (node.callee.property.name === 'some') {
+					arraySomeCalls.add(node);
+				} else if (node.callee.property.name === 'every') {
+					arrayEveryCalls.add(node);
+				}
+			}
 		},
-		[arraySomeCallSelector](node) {
-			arraySomeCalls.add(node);
-		},
-		[arrayEveryCallSelector](node) {
-			arrayEveryCalls.add(node);
-		},
-		[logicalExpressionSelector](node) {
-			logicalExpressions.push(node);
+		LogicalExpression(node) {
+			if (isLogicalExpression(node)) {
+				logicalExpressions.push(node);
+			}
 		},
 		* 'Program:exit'() {
 			const nodes = new Set(
@@ -104,17 +102,17 @@ const create = context => {
 					getUselessLengthCheckNode(logicalExpression),
 				),
 			);
+			const {sourceCode} = context;
 
 			for (const node of nodes) {
 				yield {
 					loc: {
-						start: node.left.property.loc.start,
-						end: node.loc.end,
+						start: sourceCode.getLoc(node.left.property).start,
+						end: sourceCode.getLoc(node).end,
 					},
 					messageId: zeroLengthChecks.has(node) ? 'zero' : 'non-zero',
 					/** @param {import('eslint').Rule.RuleFixer} fixer */
 					fix(fixer) {
-						const sourceCode = context.getSourceCode();
 						const {left, right} = node.parent;
 						const leftRange = getParenthesizedRange(left, sourceCode);
 						const rightRange = getParenthesizedRange(right, sourceCode);
@@ -136,14 +134,17 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow useless array length check.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

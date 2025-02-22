@@ -1,7 +1,6 @@
-'use strict';
-const quoteString = require('./utils/quote-string.js');
-const escapeTemplateElementRaw = require('./utils/escape-template-element-raw.js');
-const {replaceTemplateElement} = require('./fix/index.js');
+import escapeString from './utils/escape-string.js';
+import escapeTemplateElementRaw from './utils/escape-template-element-raw.js';
+import {replaceTemplateElement} from './fix/index.js';
 
 const defaultMessage = 'Prefer `{{suggest}}` over `{{match}}`.';
 const SUGGESTION_MESSAGE_ID = 'replace';
@@ -70,68 +69,67 @@ const create = context => {
 	const replacements = getReplacements(patterns);
 
 	if (replacements.length === 0) {
-		return {};
+		return;
 	}
 
-	return {
-		'Literal, TemplateElement': node => {
-			const {type, value, raw} = node;
+	context.on(['Literal', 'TemplateElement'], node => {
+		const {type, value, raw} = node;
 
-			let string;
-			if (type === 'Literal') {
-				string = value;
-			} else if (!isIgnoredTag(node)) {
-				string = value.raw;
-			}
+		let string;
+		if (type === 'Literal') {
+			string = value;
+		} else if (!isIgnoredTag(node)) {
+			string = value.raw;
+		}
 
-			if (!string || typeof string !== 'string') {
-				return;
-			}
+		if (!string || typeof string !== 'string') {
+			return;
+		}
 
-			const replacement = replacements.find(({regex}) => regex.test(string));
+		const replacement = replacements.find(({regex}) => regex.test(string));
 
-			if (!replacement) {
-				return;
-			}
+		if (!replacement) {
+			return;
+		}
 
-			const {fix: autoFix, message = defaultMessage, match, suggest, regex} = replacement;
-			const messageData = {
+		const {fix: autoFix, message = defaultMessage, match, suggest, regex} = replacement;
+		const problem = {
+			node,
+			message,
+			data: {
 				match,
 				suggest,
-			};
-			const problem = {
-				node,
-				message,
-				data: messageData,
-			};
+			},
+		};
 
-			const fixed = string.replace(regex, suggest);
-			const fix = type === 'Literal'
-				? fixer => fixer.replaceText(
+		const fixed = string.replace(regex, suggest);
+		const fix = type === 'Literal'
+			? fixer => {
+				const [quote] = raw;
+				return fixer.replaceText(
 					node,
-					quoteString(fixed, raw[0]),
-				)
-				: fixer => replaceTemplateElement(
-					fixer,
-					node,
-					escapeTemplateElementRaw(fixed),
+					node.parent.type === 'JSXAttribute' ? quote + fixed + quote : escapeString(fixed, quote),
 				);
-
-			if (autoFix) {
-				problem.fix = fix;
-			} else {
-				problem.suggest = [
-					{
-						messageId: SUGGESTION_MESSAGE_ID,
-						data: messageData,
-						fix,
-					},
-				];
 			}
+			: fixer => replaceTemplateElement(
+				fixer,
+				node,
+				escapeTemplateElementRaw(fixed),
+			);
 
-			return problem;
-		},
-	};
+		if (autoFix) {
+			problem.fix = fix;
+		} else {
+			problem.suggest = [
+				{
+					messageId: SUGGESTION_MESSAGE_ID,
+					fix,
+				},
+			];
+		}
+
+		return problem;
+	});
 };
 
 const schema = [
@@ -167,22 +165,27 @@ const schema = [
 							additionalProperties: false,
 						},
 					],
-				}},
+				},
+			},
 		},
 	},
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Enforce better string content.',
+			recommended: false,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		schema,
+		defaultOptions: [{}],
 		messages,
 	},
 };
+
+export default config;

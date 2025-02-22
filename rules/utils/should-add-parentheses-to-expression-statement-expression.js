@@ -1,5 +1,3 @@
-'use strict';
-
 /**
 Check if parentheses should to be added to a `node` when it's used as an `expression` of `ExpressionStatement`.
 
@@ -7,15 +5,18 @@ Check if parentheses should to be added to a `node` when it's used as an `expres
 @param {SourceCode} sourceCode - The source code object.
 @returns {boolean}
 */
-function shouldAddParenthesesToExpressionStatementExpression(node) {
+export default function shouldAddParenthesesToExpressionStatementExpression(node) {
 	switch (node.type) {
-		case 'ObjectExpression':
+		case 'ObjectExpression': {
 			return true;
-		case 'AssignmentExpression':
+		}
+
+		case 'AssignmentExpression': {
 			return node.left.type === 'ObjectPattern' || node.left.type === 'ArrayPattern';
-		default:
+		}
+
+		default: {
 			return false;
+		}
 	}
 }
-
-module.exports = shouldAddParenthesesToExpressionStatementExpression;

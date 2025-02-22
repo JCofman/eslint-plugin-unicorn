@@ -1,18 +1,8 @@
-'use strict';
-const {findVariable} = require('eslint-utils');
+import {findVariable} from '@eslint-community/eslint-utils';
+import {functionTypes} from './ast/index.js';
 
 const MESSAGE_ID = 'preferDefaultParameters';
 const MESSAGE_ID_SUGGEST = 'preferDefaultParametersSuggest';
-
-const assignmentSelector = [
-	'ExpressionStatement',
-	'[expression.type="AssignmentExpression"]',
-].join('');
-
-const declarationSelector = [
-	'VariableDeclaration',
-	'[declarations.0.type="VariableDeclarator"]',
-].join('');
 
 const isDefaultExpression = (left, right) =>
 	left
@@ -81,7 +71,7 @@ const hasExtraReferences = (assignment, references, left) => {
 };
 
 const isLastParameter = (parameters, parameter) => {
-	const lastParameter = parameters[parameters.length - 1];
+	const lastParameter = parameters.at(-1);
 
 	// See 'default-param-last' rule
 	return parameter && parameter === lastParameter;
@@ -101,8 +91,8 @@ const needsParentheses = (sourceCode, function_) => {
 
 /** @param {import('eslint').Rule.RuleFixer} fixer */
 const fixDefaultExpression = (fixer, sourceCode, node) => {
-	const {line} = node.loc.start;
-	const {column} = node.loc.end;
+	const {line} = sourceCode.getLoc(node).start;
+	const {column} = sourceCode.getLoc(node).end;
 	const nodeText = sourceCode.getText(node);
 	const lineText = sourceCode.lines[line - 1];
 	const isOnlyNodeOnLine = lineText.trim() === nodeText;
@@ -116,10 +106,8 @@ const fixDefaultExpression = (fixer, sourceCode, node) => {
 	}
 
 	if (endsWithWhitespace) {
-		return fixer.removeRange([
-			node.range[0],
-			node.range[1] + 1,
-		]);
+		const [start, end] = sourceCode.getRange(node);
+		return fixer.removeRange([start, end + 1]);
 	}
 
 	return fixer.remove(node);
@@ -127,11 +115,11 @@ const fixDefaultExpression = (fixer, sourceCode, node) => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 	const functionStack = [];
 
 	const checkExpression = (node, left, right, assignment) => {
-		const currentFunction = functionStack[functionStack.length - 1];
+		const currentFunction = functionStack.at(-1);
 
 		if (!currentFunction || !isDefaultExpression(left, right)) {
 			return;
@@ -148,11 +136,11 @@ const create = context => {
 			return;
 		}
 
-		const variable = findVariable(context.getScope(), secondId);
+		const variable = findVariable(sourceCode.getScope(node), secondId);
 
 		// This was reported https://github.com/sindresorhus/eslint-plugin-unicorn/issues/1122
 		// But can't reproduce, just ignore this case
-		/* istanbul ignore next */
+		/* c8 ignore next 3 */
 		if (!variable) {
 			return;
 		}
@@ -189,33 +177,35 @@ const create = context => {
 		};
 	};
 
-	return {
-		':function': node => {
-			functionStack.push(node);
-		},
-		':function:exit': () => {
-			functionStack.pop();
-		},
-		[assignmentSelector]: node => {
-			const {left, right} = node.expression;
+	context.on(functionTypes, node => {
+		functionStack.push(node);
+	});
 
-			return checkExpression(node, left, right, true);
-		},
-		[declarationSelector]: node => {
-			const {id, init} = node.declarations[0];
+	context.onExit(functionTypes, () => {
+		functionStack.pop();
+	});
 
-			return checkExpression(node, id, init, false);
-		},
-	};
+	context.on('AssignmentExpression', node => {
+		if (node.parent.type === 'ExpressionStatement' && node.parent.expression === node) {
+			return checkExpression(node.parent, node.left, node.right, true);
+		}
+	});
+
+	context.on('VariableDeclarator', node => {
+		if (node.parent.type === 'VariableDeclaration' && node.parent.declarations[0] === node) {
+			return checkExpression(node.parent, node.id, node.init, false);
+		}
+	});
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer default parameters over reassignment.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
@@ -225,3 +215,5 @@ module.exports = {
 		},
 	},
 };
+
+export default config;

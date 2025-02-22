@@ -1,10 +1,6 @@
-'use strict';
-const isLiteralValue = require('./utils/is-literal-value.js');
-const {
-	getNegativeIndexLengthNode,
-	removeLengthNode,
-} = require('./shared/negative-index.js');
-const typedArray = require('./shared/typed-array.js');
+import {getNegativeIndexLengthNode, removeLengthNode} from './shared/negative-index.js';
+import typedArray from './shared/typed-array.js';
+import {isLiteral} from './ast/index.js';
 
 const MESSAGE_ID = 'prefer-negative-index';
 const messages = {
@@ -28,7 +24,23 @@ const methods = new Map([
 		},
 	],
 	[
+		'subarray',
+		{
+			argumentsIndexes: [0, 1],
+			supportObjects: new Set(typedArray),
+		},
+	],
+	[
 		'splice',
+		{
+			argumentsIndexes: [0],
+			supportObjects: new Set([
+				'Array',
+			]),
+		},
+	],
+	[
+		'toSpliced',
 		{
 			argumentsIndexes: [0],
 			supportObjects: new Set([
@@ -42,6 +54,18 @@ const methods = new Map([
 			argumentsIndexes: [0],
 			supportObjects: new Set([
 				'Array',
+				'String',
+				...typedArray,
+			]),
+		},
+	],
+	[
+		'with',
+		{
+			argumentsIndexes: [0],
+			supportObjects: new Set([
+				'Array',
+				...typedArray,
 			]),
 		},
 	],
@@ -52,7 +76,6 @@ const getMemberName = node => {
 
 	if (
 		type === 'MemberExpression'
-		&& property
 		&& property.type === 'Identifier'
 	) {
 		return property.name;
@@ -91,15 +114,15 @@ function parse(node) {
 	const parentCallee = callee.object.object;
 
 	if (
-		// [].{slice,splice}
+		// `[].{slice,splice,toSpliced,at,with}`
 		(
 			parentCallee.type === 'ArrayExpression'
 			&& parentCallee.elements.length === 0
 		)
-		// ''.slice
+		// `''.slice`
 		|| (
 			method === 'slice'
-			&& isLiteralValue(parentCallee, '')
+			&& isLiteral(parentCallee, '')
 		)
 		// {Array,String...}.prototype.slice
 		// Array.prototype.splice
@@ -132,7 +155,11 @@ function parse(node) {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => ({
-	'CallExpression[callee.type="MemberExpression"]': node => {
+	CallExpression(node) {
+		if (node.callee.type !== 'MemberExpression') {
+			return;
+		}
+
 		const parsed = parse(node);
 
 		if (!parsed) {
@@ -159,7 +186,7 @@ const create = context => ({
 			messageId: MESSAGE_ID,
 			data: {method},
 			* fix(fixer) {
-				const sourceCode = context.getSourceCode();
+				const {sourceCode} = context;
 				for (const node of removableNodes) {
 					yield removeLengthNode(node, fixer, sourceCode);
 				}
@@ -169,14 +196,17 @@ const create = context => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Prefer negative index over `.length - index` for `{String,Array,TypedArray}#slice()`, `Array#splice()` and `Array#at()`.',
+			description: 'Prefer negative index over `.length - index` when possible.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

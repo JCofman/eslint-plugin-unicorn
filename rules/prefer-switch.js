@@ -1,7 +1,6 @@
-'use strict';
-const {hasSideEffect} = require('eslint-utils');
-const isSameReference = require('./utils/is-same-reference.js');
-const getIndentString = require('./utils/get-indent-string.js');
+import {hasSideEffect} from '@eslint-community/eslint-utils';
+import isSameReference from './utils/is-same-reference.js';
+import getIndentString from './utils/get-indent-string.js';
 
 const MESSAGE_ID = 'prefer-switch';
 const messages = {
@@ -162,21 +161,24 @@ function getBlockStatementLastNode(blockStatement) {
 function shouldInsertBreakStatement(node) {
 	switch (node.type) {
 		case 'ReturnStatement':
-		case 'ThrowStatement':
+		case 'ThrowStatement': {
 			return false;
+		}
 
-		case 'IfStatement':
+		case 'IfStatement': {
 			return !node.alternate
 				|| shouldInsertBreakStatement(node.consequent)
 				|| shouldInsertBreakStatement(node.alternate);
+		}
 
 		case 'BlockStatement': {
 			const lastNode = getBlockStatementLastNode(node);
 			return !lastNode || shouldInsertBreakStatement(lastNode);
 		}
 
-		default:
+		default: {
 			return true;
+		}
 	}
 }
 
@@ -188,7 +190,7 @@ function fix({discriminant, ifStatements}, sourceCode, options) {
 		const indent = getIndentString(firstStatement, sourceCode);
 		yield fixer.insertTextBefore(firstStatement, `switch (${discriminantText}) {`);
 
-		const lastStatement = ifStatements[ifStatements.length - 1].statement;
+		const lastStatement = ifStatements.at(-1).statement;
 		if (lastStatement.alternate) {
 			const {alternate} = lastStatement;
 			yield fixer.insertTextBefore(alternate, `\n${indent}default: `);
@@ -205,9 +207,11 @@ function fix({discriminant, ifStatements}, sourceCode, options) {
 			*/
 		} else {
 			switch (options.emptyDefaultCase) {
-				case 'no-default-comment':
+				case 'no-default-comment': {
 					yield fixer.insertTextAfter(firstStatement, `\n${indent}// No default`);
 					break;
+				}
+
 				case 'do-nothing-comment': {
 					yield fixer.insertTextAfter(firstStatement, `\n${indent}default:\n${indent}// Do nothing`);
 					break;
@@ -219,16 +223,19 @@ function fix({discriminant, ifStatements}, sourceCode, options) {
 		yield fixer.insertTextAfter(firstStatement, `\n${indent}}`);
 
 		for (const {statement, compareExpressions} of ifStatements) {
-			const {consequent, alternate, range} = statement;
-			const headRange = [range[0], consequent.range[0]];
+			const {consequent, alternate} = statement;
 
 			if (alternate) {
-				const [, start] = consequent.range;
-				const [end] = alternate.range;
-				yield fixer.replaceTextRange([start, end], '');
+				const [, start] = sourceCode.getRange(consequent);
+				const [end] = sourceCode.getRange(alternate);
+				yield fixer.removeRange([start, end]);
 			}
 
-			yield fixer.replaceTextRange(headRange, '');
+			const headRange = [
+				sourceCode.getRange(statement)[0],
+				sourceCode.getRange(consequent)[0],
+			];
+			yield fixer.removeRange(headRange);
 			for (const {left, right} of compareExpressions) {
 				const node = isSame(left, discriminant) ? right : left;
 				const text = sourceCode.getText(node);
@@ -251,17 +258,19 @@ const create = context => {
 		insertBreakInDefaultCase: false,
 		...context.options[0],
 	};
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 	const ifStatements = new Set();
 	const breakStatements = [];
 	const checked = new Set();
 
 	return {
-		'IfStatement'(node) {
+		IfStatement(node) {
 			ifStatements.add(node);
 		},
-		'BreakStatement:not([label])'(node) {
-			breakStatements.push(node);
+		BreakStatement(node) {
+			if (!node.label) {
+				breakStatements.push(node);
+			}
 		},
 		* 'Program:exit'() {
 			for (const node of ifStatements) {
@@ -281,8 +290,8 @@ const create = context => {
 
 				const problem = {
 					loc: {
-						start: node.loc.start,
-						end: node.consequent.loc.start,
+						start: sourceCode.getLoc(node).start,
+						end: sourceCode.getLoc(node.consequent).start,
 					},
 					messageId: MESSAGE_ID,
 				};
@@ -308,7 +317,6 @@ const schema = [
 			minimumCases: {
 				type: 'integer',
 				minimum: 2,
-				default: 3,
 			},
 			emptyDefaultCase: {
 				enum: [
@@ -316,22 +324,30 @@ const schema = [
 					'do-nothing-comment',
 					'no-default-case',
 				],
-				default: 'no-default-comment',
 			},
 		},
 	},
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `switch` over multiple `else-if`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		schema,
+		defaultOptions: [
+			{
+				minimumCases: 3,
+				emptyDefaultCase: 'no-default-comment',
+			},
+		],
 		messages,
 	},
 };
+
+export default config;

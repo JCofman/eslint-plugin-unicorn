@@ -2,6 +2,11 @@ name: CI
 on:
   - push
   - pull_request
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     name: Node.js ${{ matrix.node-version }} on ${{ matrix.os }}
@@ -10,52 +15,80 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 16
-          - 14
-          - 12
+          - 23
+          - 18
         os:
           - ubuntu-latest
           - windows-latest
-        exclude:
-          - os: ubuntu-latest
-            node-version: 16
+        # Even numbers of node-version
+        # include:
+        #   - os: ubuntu-latest
+        #     node-version: 18
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm install
       - run: npx ava
   lint-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 16
+          # Locked due to the difference of `zlib.gzipSync()` between Node.js versions
+          node-version: 22
       - run: npm install
       - run: npm run lint
+      - run: npx del-cli test/snapshots --verbose
       # Force update snapshots, https://github.com/avajs/ava/discussions/2754
-      - run: npx nyc ava --update-snapshots
+      - run: npx c8 ava --update-snapshots
         env:
           AVA_FORCE_CI: not-ci
-      - run: npm run generate-rules-table
-      - run: npm run generate-usage-example
-      - run: git diff --exit-code --name-only
-      - uses: codecov/codecov-action@v1
+      - run: git diff --exit-code
+      - uses: codecov/codecov-action@v4
         with:
           fail_ci_if_error: true
+          disable_search: true
+          files: coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
   run-rules-on-codebase:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: npm install
       - run: npm run run-rules-on-codebase
   integration:
+    name: Integration test (${{ matrix.group }})
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+          - "9"
+    env:
+      TIMING: 1
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - run: npm install
-      - run: npm run integration
+      - run: npm run integration -- --group ${{ matrix.group }}

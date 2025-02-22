@@ -1,5 +1,5 @@
-'use strict';
-const {getStaticValue} = require('eslint-utils');
+import {getStaticValue} from '@eslint-community/eslint-utils';
+import {isNumberLiteral} from '../ast/index.js';
 
 const isStaticProperties = (node, object, properties) =>
 	node.type === 'MemberExpression'
@@ -9,6 +9,7 @@ const isStaticProperties = (node, object, properties) =>
 	&& node.object.name === object
 	&& node.property.type === 'Identifier'
 	&& properties.has(node.property.name);
+
 const isFunctionCall = (node, functionName) => node.type === 'CallExpression'
 	&& !node.optional
 	&& node.callee.type === 'Identifier'
@@ -100,12 +101,9 @@ const isNumberMethodCall = node =>
 	&& isStaticProperties(node.callee, 'Number', numberMethods);
 const isGlobalParseToNumberFunctionCall = node => isFunctionCall(node, 'parseInt') || isFunctionCall(node, 'parseFloat');
 
-const isStaticNumber = (node, scope) => {
-	const staticResult = getStaticValue(node, scope);
-	return staticResult !== null && typeof staticResult.value === 'number';
-};
+const isStaticNumber = (node, scope) =>
+	typeof getStaticValue(node, scope)?.value === 'number';
 
-const isNumberLiteral = node => node.type === 'Literal' && typeof node.value === 'number';
 const isLengthProperty = node =>
 	node.type === 'MemberExpression'
 	&& !node.computed
@@ -115,7 +113,8 @@ const isLengthProperty = node =>
 
 // `+` and `>>>` operators are handled separately
 const mathOperators = new Set(['-', '*', '/', '%', '**', '<<', '>>', '|', '^', '&']);
-function isNumber(node, scope) {
+
+export default function isNumber(node, scope) {
 	if (
 		isNumberLiteral(node)
 		|| isMathProperty(node)
@@ -180,12 +179,14 @@ function isNumber(node, scope) {
 			break;
 		}
 
-		case 'UpdateExpression':
+		case 'UpdateExpression': {
 			if (isNumber(node.argument, scope)) {
 				return true;
 			}
 
 			break;
+		}
+
 		case 'ConditionalExpression': {
 			const isConsequentNumber = isNumber(node.consequent, scope);
 			const isAlternateNumber = isNumber(node.alternate, scope);
@@ -209,7 +210,7 @@ function isNumber(node, scope) {
 		}
 
 		case 'SequenceExpression': {
-			if (isNumber(node.expressions[node.expressions.length - 1], scope)) {
+			if (isNumber(node.expressions.at(-1), scope)) {
 				return true;
 			}
 
@@ -220,5 +221,3 @@ function isNumber(node, scope) {
 
 	return isStaticNumber(node, scope);
 }
-
-module.exports = isNumber;

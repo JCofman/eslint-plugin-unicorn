@@ -1,9 +1,9 @@
-'use strict';
-const {hasSideEffect, isCommaToken, isSemicolonToken} = require('eslint-utils');
-const {methodCallSelector} = require('./selectors/index.js');
-const getCallExpressionArgumentsText = require('./utils/get-call-expression-arguments-text.js');
-const isSameReference = require('./utils/is-same-reference.js');
-const {isNodeMatches} = require('./utils/is-node-matches.js');
+import {hasSideEffect, isSemicolonToken} from '@eslint-community/eslint-utils';
+import {getCallExpressionTokens, getCallExpressionArgumentsText} from './utils/index.js';
+import isSameReference from './utils/is-same-reference.js';
+import {isNodeMatches} from './utils/is-node-matches.js';
+import getPreviousNode from './utils/get-previous-node.js';
+import {isMethodCall} from './ast/index.js';
 
 const ERROR = 'error';
 const SUGGESTION = 'suggestion';
@@ -12,30 +12,21 @@ const messages = {
 	[SUGGESTION]: 'Merge with previous one.',
 };
 
-const arrayPushExpressionStatement = [
-	'ExpressionStatement',
-	methodCallSelector({path: 'expression', method: 'push'}),
-].join('');
+const isArrayPushCall = node =>
+	node
+	&& node.parent.type === 'ExpressionStatement'
+	&& node.parent.expression === node
+	&& isMethodCall(node, {
+		method: 'push',
+		optionalCall: false,
+		optionalMember: false,
+	});
 
-const selector = `${arrayPushExpressionStatement} + ${arrayPushExpressionStatement}`;
-
-function getFirstExpression(node, sourceCode) {
-	const {parent} = node;
-	const visitorKeys = sourceCode.visitorKeys[parent.type] || Object.keys(parent);
-
-	for (const property of visitorKeys) {
-		const value = parent[property];
-		if (Array.isArray(value)) {
-			const index = value.indexOf(node);
-
-			if (index !== -1) {
-				return value[index - 1];
-			}
-		}
+function getFirstArrayPushCall(secondCall, sourceCode) {
+	const firstCall = getPreviousNode(secondCall.parent, sourceCode)?.expression;
+	if (isArrayPushCall(firstCall)) {
+		return firstCall;
 	}
-
-	/* istanbul ignore next */
-	throw new Error('Cannot find the first `Array#push()` call.\nPlease open an issue at https://github.com/sindresorhus/eslint-plugin-unicorn/issues/new?title=%60no-array-push-push%60%3A%20Cannot%20find%20first%20%60push()%60');
 }
 
 function create(context) {
@@ -52,19 +43,25 @@ function create(context) {
 		'process.stderr',
 		...ignore,
 	];
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	return {
-		[selector](secondExpression) {
-			const secondCall = secondExpression.expression;
+		CallExpression(secondCall) {
+			if (!isArrayPushCall(secondCall)) {
+				return;
+			}
+
 			const secondCallArray = secondCall.callee.object;
 
 			if (isNodeMatches(secondCallArray, ignoredObjects)) {
 				return;
 			}
 
-			const firstExpression = getFirstExpression(secondExpression, sourceCode);
-			const firstCall = firstExpression.expression;
+			const firstCall = getFirstArrayPushCall(secondCall, sourceCode);
+			if (!firstCall) {
+				return;
+			}
+
 			const firstCallArray = firstCall.callee.object;
 
 			// Not same array
@@ -80,23 +77,28 @@ function create(context) {
 
 			const fix = function * (fixer) {
 				if (secondCallArguments.length > 0) {
-					const text = getCallExpressionArgumentsText(secondCall, sourceCode);
+					const text = getCallExpressionArgumentsText(sourceCode, secondCall);
 
-					const [penultimateToken, lastToken] = sourceCode.getLastTokens(firstCall, 2);
+					const {
+						trailingCommaToken,
+						closingParenthesisToken,
+					} = getCallExpressionTokens(sourceCode, firstCall);
+
 					yield (
-						isCommaToken(penultimateToken)
-							? fixer.insertTextAfter(penultimateToken, ` ${text}`)
-							: fixer.insertTextBefore(lastToken, firstCall.arguments.length > 0 ? `, ${text}` : text)
+						trailingCommaToken
+							? fixer.insertTextAfter(trailingCommaToken, ` ${text}`)
+							: fixer.insertTextBefore(closingParenthesisToken, firstCall.arguments.length > 0 ? `, ${text}` : text)
 					);
 				}
 
+				const firstExpression = firstCall.parent;
+				const secondExpression = secondCall.parent;
 				const shouldKeepSemicolon = !isSemicolonToken(sourceCode.getLastToken(firstExpression))
 					&& isSemicolonToken(sourceCode.getLastToken(secondExpression));
+				const [, start] = sourceCode.getRange(firstExpression);
+				const [, end] = sourceCode.getRange(secondExpression);
 
-				yield fixer.replaceTextRange(
-					[firstExpression.range[1], secondExpression.range[1]],
-					shouldKeepSemicolon ? ';' : '',
-				);
+				yield fixer.replaceTextRange([start, end], shouldKeepSemicolon ? ';' : '');
 			};
 
 			if (secondCallArguments.some(element => hasSideEffect(element, sourceCode))) {
@@ -129,16 +131,20 @@ const schema = [
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Enforce combining multiple `Array#push()` into one call.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		schema,
+		defaultOptions: [{}],
 		messages,
 	},
 };
+
+export default config;

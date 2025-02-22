@@ -1,36 +1,18 @@
-'use strict';
-const {matches, methodCallSelector} = require('./selectors/index.js');
-const {getParenthesizedRange} = require('./utils/parentheses.js');
+import {getParenthesizedRange} from './utils/index.js';
+import {isFunction, isMethodCall} from './ast/index.js';
 
 const MESSAGE_ID_RESOLVE = 'resolve';
 const MESSAGE_ID_REJECT = 'reject';
 const messages = {
-	[MESSAGE_ID_RESOLVE]: 'Prefer `{{type}} value` over `{{type}} Promise.resolve(error)`.',
+	[MESSAGE_ID_RESOLVE]: 'Prefer `{{type}} value` over `{{type}} Promise.resolve(value)`.',
 	[MESSAGE_ID_REJECT]: 'Prefer `throw error` over `{{type}} Promise.reject(error)`.',
 };
 
-const selector = [
-	methodCallSelector({
-		object: 'Promise',
-		methods: ['resolve', 'reject'],
-	}),
-	matches([
-		'ArrowFunctionExpression > .body',
-		'ReturnStatement > .argument',
-		'YieldExpression[delegate!=true] > .argument',
-	]),
-].join('');
-
-const functionTypes = new Set([
-	'ArrowFunctionExpression',
-	'FunctionDeclaration',
-	'FunctionExpression',
-]);
 function getFunctionNode(node) {
 	let isInTryStatement = false;
 	let functionNode;
 	for (; node; node = node.parent) {
-		if (functionTypes.has(node.type)) {
+		if (isFunction(node)) {
 			functionNode = node;
 			break;
 		}
@@ -101,7 +83,7 @@ function fix(callExpression, isInTryStatement, sourceCode) {
 	}
 
 	const {callee, parent, arguments: [errorOrValue]} = callExpression;
-	if (errorOrValue && errorOrValue.type === 'SpreadElement') {
+	if (errorOrValue?.type === 'SpreadElement') {
 		return;
 	}
 
@@ -122,13 +104,13 @@ function fix(callExpression, isInTryStatement, sourceCode) {
 
 		let text = errorOrValue ? sourceCode.getText(errorOrValue) : '';
 
-		if (errorOrValue && errorOrValue.type === 'SequenceExpression') {
+		if (errorOrValue?.type === 'SequenceExpression') {
 			text = `(${text})`;
 		}
 
 		if (isReject) {
 			// `return Promise.reject()` -> `throw undefined`
-			text = text || 'undefined';
+			text ||= 'undefined';
 			text = `throw ${text}`;
 
 			if (isYieldExpression) {
@@ -155,12 +137,12 @@ function fix(callExpression, isInTryStatement, sourceCode) {
 			} else if (parent.type === 'ReturnStatement') {
 				text = `return${text ? ' ' : ''}${text};`;
 			} else {
-				if (errorOrValue && errorOrValue.type === 'ObjectExpression') {
+				if (errorOrValue?.type === 'ObjectExpression') {
 					text = `(${text})`;
 				}
 
 				// `=> Promise.resolve()` -> `=> {}`
-				text = text || '{}';
+				text ||= '{}';
 			}
 		}
 
@@ -173,10 +155,35 @@ function fix(callExpression, isInTryStatement, sourceCode) {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	return {
-		[selector](callExpression) {
+		CallExpression(callExpression) {
+			if (!(
+				isMethodCall(callExpression, {
+					object: 'Promise',
+					methods: ['resolve', 'reject'],
+					optionalCall: false,
+					optionalMember: false,
+				})
+				&& (
+					(
+						callExpression.parent.type === 'ArrowFunctionExpression'
+						&& callExpression.parent.body === callExpression
+					)
+					|| (
+						callExpression.parent.type === 'ReturnStatement'
+						&& callExpression.parent.argument === callExpression
+					)
+					|| (
+						callExpression.parent.type === 'YieldExpression'
+						&& !callExpression.parent.delegate && callExpression.parent.argument === callExpression
+					)
+				)
+			)) {
+				return;
+			}
+
 			const {functionNode, isInTryStatement} = getFunctionNode(callExpression);
 			if (!functionNode || !(functionNode.async || isPromiseCallback(functionNode))) {
 				return;
@@ -190,18 +197,18 @@ const create = context => {
 	};
 };
 
-const schema = [];
-
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow returning/yielding `Promise.resolve/reject()` in async functions or promise callbacks',
+			recommended: true,
 		},
 		fixable: 'code',
-		schema,
 		messages,
 	},
 };
+
+export default config;

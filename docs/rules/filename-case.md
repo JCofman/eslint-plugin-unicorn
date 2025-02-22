@@ -1,6 +1,9 @@
 # Enforce a case style for filenames
 
-✅ *This rule is part of the [recommended](https://github.com/sindresorhus/eslint-plugin-unicorn#recommended-config) config.*
+💼 This rule is enabled in the ✅ `recommended` [config](https://github.com/sindresorhus/eslint-plugin-unicorn#preset-configs-eslintconfigjs).
+
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
 
 Enforces all linted files to have their names in a certain case style and lowercase file extension. The default is `kebabCase`.
 
@@ -86,7 +89,7 @@ For example:
 - Ignore some files when you use [eslint-plugin-markdown](https://github.com/eslint/eslint-plugin-markdown), for example `README.md`.
 - Some tools may require special names for some files.
 
-Don't forget that you must escape special characters that you don't want to be interpreted as part of the regex, for example, if you have `[` in the actual filename. For example, to match `[id].js`, use `/^\[id\]\.js$/"` or `'^\\[id\\]\\.js$'`.
+Don't forget that you must escape special characters that you don't want to be interpreted as part of the regex, for example, if you have `[` in the actual filename. For example, to match `[id].js`, use `/^\[id]\.js$/` or `'^\\[id]\\.js$'`.
 
 ```js
 "unicorn/filename-case": [
@@ -101,4 +104,50 @@ Don't forget that you must escape special characters that you don't want to be i
 		]
 	}
 ]
+```
+
+### multipleFileExtensions
+
+Type: `boolean`\
+Default: `true`
+
+Whether to treat additional, `.`-separated parts of a filename as parts of the extension rather than parts of the filename.
+
+Note that the parts of the filename treated as the extension will not have the filename case enforced.
+
+For example:
+
+```js
+"unicorn/filename-case": [
+	"error",
+	{
+		"case": "pascalCase"
+	}
+]
+
+// Results
+✅ FooBar.Test.js
+✅ FooBar.TestUtils.js
+✅ FooBar.testUtils.js
+✅ FooBar.test.js
+✅ FooBar.test-utils.js
+✅ FooBar.test_utils.js
+```
+
+```js
+"unicorn/filename-case": [
+	"error",
+	{
+		"case": "pascalCase",
+		"multipleFileExtensions": false
+	}
+]
+
+// Results
+✅ FooBar.Test.js
+✅ FooBar.TestUtils.js
+❌ FooBar.testUtils.js
+❌ FooBar.test.js
+❌ FooBar.test-utils.js
+❌ FooBar.test_utils.js
 ```

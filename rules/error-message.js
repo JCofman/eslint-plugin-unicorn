@@ -1,7 +1,7 @@
-'use strict';
-const {getStaticValue} = require('eslint-utils');
-const isShadowed = require('./utils/is-shadowed.js');
-const {callOrNewExpressionSelector} = require('./selectors/index.js');
+import {getStaticValue} from '@eslint-community/eslint-utils';
+import isShadowed from './utils/is-shadowed.js';
+import {isCallOrNewExpression} from './ast/index.js';
+import builtinErrors from './shared/builtin-errors.js';
 
 const MESSAGE_ID_MISSING_MESSAGE = 'missing-message';
 const MESSAGE_ID_EMPTY_MESSAGE = 'message-is-empty-string';
@@ -12,23 +12,18 @@ const messages = {
 	[MESSAGE_ID_NOT_STRING]: 'Error message should be a string.',
 };
 
-const selector = callOrNewExpressionSelector([
-	// https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
-	'Error',
-	'EvalError',
-	'RangeError',
-	'ReferenceError',
-	'SyntaxError',
-	'TypeError',
-	'URIError',
-	'InternalError',
-	'AggregateError',
-]);
-
 /** @param {import('eslint').Rule.RuleContext} context */
-const create = context => ({
-	[selector](expression) {
-		if (isShadowed(context.getScope(), expression.callee)) {
+const create = context => {
+	context.on(['CallExpression', 'NewExpression'], expression => {
+		if (!isCallOrNewExpression(expression, {
+			names: builtinErrors,
+			optional: false,
+		})) {
+			return;
+		}
+
+		const scope = context.sourceCode.getScope(expression);
+		if (isShadowed(scope, expression.callee)) {
 			return;
 		}
 
@@ -59,7 +54,7 @@ const create = context => ({
 			};
 		}
 
-		const staticResult = getStaticValue(node, context.getScope());
+		const staticResult = getStaticValue(node, scope);
 
 		// We don't know the value of `message`
 		if (!staticResult) {
@@ -80,17 +75,20 @@ const create = context => ({
 				messageId: MESSAGE_ID_EMPTY_MESSAGE,
 			};
 		}
-	},
-});
+	});
+};
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'problem',
 		docs: {
 			description: 'Enforce passing a `message` value when creating a built-in error.',
+			recommended: true,
 		},
 		messages,
 	},
 };
+
+export default config;

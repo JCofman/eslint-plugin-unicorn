@@ -1,8 +1,11 @@
 # Fix whitespace-insensitive template indentation
 
-✅ *This rule is part of the [recommended](https://github.com/sindresorhus/eslint-plugin-unicorn#recommended-config) config.*
+💼 This rule is enabled in the ✅ `recommended` [config](https://github.com/sindresorhus/eslint-plugin-unicorn#preset-configs-eslintconfigjs).
 
-🔧 *This rule is [auto-fixable](https://eslint.org/docs/user-guide/command-line-interface#fixing-problems).*
+🔧 This rule is automatically fixable by the [`--fix` CLI option](https://eslint.org/docs/latest/user-guide/command-line-interface#--fix).
+
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
 
 [Tagged templates](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Template_literals#tagged_templates) often look ugly/jarring because their indentation doesn't match the code they're found in. In many cases, whitespace is insignificant, or a library like [strip-indent](https://www.npmjs.com/package/strip-indent) is used to remove the margin. See [proposal-string-dedent](https://github.com/tc39/proposal-string-dedent) (stage 1 at the time of writing) for a proposal on fixing this in JavaScript.
 
@@ -66,7 +69,7 @@ Under the hood, [strip-indent](https://npmjs.com/package/strip-indent) is used t
 
 ## Options
 
-The rule accepts lists of `tags`, `functions`, `selectors` and `comments` to match template literals. `tags` are tagged template literal identifiers, functions are names of utility functions like `stripIndent`, selectors can be any [ESLint selector](https://eslint.org/docs/developer-guide/selectors), and comments are `/* block-commented */` strings.
+The rule accepts lists of `tags`, `functions`, `selectors` and `comments` to match template literals. `tags` are tagged template literal identifiers or member expression paths, functions are names or member expression paths of utility functions like `stripIndent`, selectors can be any [ESLint selector](https://eslint.org/docs/developer-guide/selectors), and comments are `/* block-commented */` strings.
 
 Default configuration:
 

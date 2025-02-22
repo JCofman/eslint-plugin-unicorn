@@ -1,5 +1,3 @@
-'use strict';
-
 /**
 Check if the given node is a true logical expression or not.
 
@@ -10,8 +8,7 @@ The three binary expressions logical-or (`||`), logical-and (`&&`), and coalesce
 @see https://tc39.es/ecma262/#prod-ShortCircuitExpression
 */
 const isLogicalExpression = node =>
-	node
-	&& node.type === 'LogicalExpression'
+	node?.type === 'LogicalExpression'
 	&& (node.operator === '&&' || node.operator === '||');
 
-module.exports = isLogicalExpression;
+export default isLogicalExpression;

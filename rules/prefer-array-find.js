@@ -1,23 +1,24 @@
-'use strict';
-const {isParenthesized, findVariable} = require('eslint-utils');
-const {
-	not,
-	methodCallSelector,
-	notLeftHandSideSelector,
-} = require('./selectors/index.js');
-const getVariableIdentifiers = require('./utils/get-variable-identifiers.js');
-const avoidCapture = require('./utils/avoid-capture.js');
-const getScopes = require('./utils/get-scopes.js');
-const singular = require('./utils/singular.js');
-const {
+import {isParenthesized, findVariable} from '@eslint-community/eslint-utils';
+import {
 	extendFixRange,
 	removeMemberExpressionProperty,
 	removeMethodCall,
 	renameVariable,
-} = require('./fix/index.js');
+} from './fix/index.js';
+import {
+	isLeftHandSide,
+	singular,
+	getScopes,
+	getAvailableVariableName,
+	getVariableIdentifiers,
+} from './utils/index.js';
+import {isMethodCall} from './ast/index.js';
 
 const ERROR_ZERO_INDEX = 'error-zero-index';
 const ERROR_SHIFT = 'error-shift';
+const ERROR_POP = 'error-pop';
+const ERROR_AT_ZERO = 'error-at-zero';
+const ERROR_AT_MINUS_ONE = 'error-at-minus-one';
 const ERROR_DESTRUCTURING_DECLARATION = 'error-destructuring-declaration';
 const ERROR_DESTRUCTURING_ASSIGNMENT = 'error-destructuring-assignment';
 const ERROR_DECLARATION = 'error-variable';
@@ -26,7 +27,10 @@ const SUGGESTION_LOGICAL_OR_OPERATOR = 'suggest-logical-or-operator';
 const messages = {
 	[ERROR_DECLARATION]: 'Prefer `.find(…)` over `.filter(…)`.',
 	[ERROR_ZERO_INDEX]: 'Prefer `.find(…)` over `.filter(…)[0]`.',
+	[ERROR_AT_ZERO]: 'Prefer `.find(…)` over `.filter(…).at(0)`.',
 	[ERROR_SHIFT]: 'Prefer `.find(…)` over `.filter(…).shift()`.',
+	[ERROR_POP]: 'Prefer `.findLast(…)` over `.filter(…).pop()`.',
+	[ERROR_AT_MINUS_ONE]: 'Prefer `.findLast(…)` over `.filter(…).at(-1)`.',
 	[ERROR_DESTRUCTURING_DECLARATION]: 'Prefer `.find(…)` over destructuring `.filter(…)`.',
 	// Same message as `ERROR_DESTRUCTURING_DECLARATION`, but different case
 	[ERROR_DESTRUCTURING_ASSIGNMENT]: 'Prefer `.find(…)` over destructuring `.filter(…)`.',
@@ -34,69 +38,13 @@ const messages = {
 	[SUGGESTION_LOGICAL_OR_OPERATOR]: 'Replace `.filter(…)` with `.find(…) || …`.',
 };
 
-const filterMethodSelectorOptions = {
+const isArrayFilterCall = node => isMethodCall(node, {
 	method: 'filter',
 	minimumArguments: 1,
 	maximumArguments: 2,
-};
-
-const filterVariableSelector = [
-	'VariableDeclaration',
-	// Exclude `export const foo = [];`
-	not('ExportNamedDeclaration > .declaration'),
-	' > ',
-	'VariableDeclarator.declarations',
-	'[id.type="Identifier"]',
-	methodCallSelector({
-		...filterMethodSelectorOptions,
-		path: 'init',
-	}),
-].join('');
-
-const zeroIndexSelector = [
-	'MemberExpression',
-	'[computed!=false]',
-	'[property.type="Literal"]',
-	'[property.raw="0"]',
-	notLeftHandSideSelector(),
-	methodCallSelector({
-		...filterMethodSelectorOptions,
-		path: 'object',
-	}),
-].join('');
-
-const shiftSelector = [
-	methodCallSelector({
-		method: 'shift',
-		argumentsLength: 0,
-	}),
-	methodCallSelector({
-		...filterMethodSelectorOptions,
-		path: 'callee.object',
-	}),
-].join('');
-
-const destructuringDeclaratorSelector = [
-	'VariableDeclarator',
-	'[id.type="ArrayPattern"]',
-	'[id.elements.length=1]',
-	'[id.elements.0.type!="RestElement"]',
-	methodCallSelector({
-		...filterMethodSelectorOptions,
-		path: 'init',
-	}),
-].join('');
-
-const destructuringAssignmentSelector = [
-	'AssignmentExpression',
-	'[left.type="ArrayPattern"]',
-	'[left.elements.length=1]',
-	'[left.elements.0.type!="RestElement"]',
-	methodCallSelector({
-		...filterMethodSelectorOptions,
-		path: 'right',
-	}),
-].join('');
+	optionalCall: false,
+	optionalMember: false,
+});
 
 // Need add `()` to the `AssignmentExpression`
 // - `ObjectExpression`: `[{foo}] = array.filter(bar)` fix to `{foo} = array.find(bar)`
@@ -127,14 +75,14 @@ const hasLowerPrecedence = (node, operator) => (
 	))
 	|| node.type === 'ConditionalExpression'
 	// Lower than `assignment`, should already parenthesized
-	/* istanbul ignore next */
+	/* c8 ignore next */
 	|| node.type === 'AssignmentExpression'
 	|| node.type === 'YieldExpression'
 	|| node.type === 'SequenceExpression'
 );
 
 const getDestructuringLeftAndRight = node => {
-	/* istanbul ignore next */
+	/* c8 ignore next 3 */
 	if (!node) {
 		return {};
 	}
@@ -208,11 +156,9 @@ const fixDestructuringAndReplaceFilter = (sourceCode, node) => {
 };
 
 const isAccessingZeroIndex = node =>
-	node.parent
-	&& node.parent.type === 'MemberExpression'
+	node.parent.type === 'MemberExpression'
 	&& node.parent.computed === true
 	&& node.parent.object === node
-	&& node.parent.property
 	&& node.parent.property.type === 'Literal'
 	&& node.parent.property.raw === '0';
 
@@ -222,116 +168,285 @@ const isDestructuringFirstElement = node => {
 		&& right
 		&& right === node
 		&& left.type === 'ArrayPattern'
-		&& left.elements
 		&& left.elements.length === 1
+		&& left.elements[0]
 		&& left.elements[0].type !== 'RestElement';
 };
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
+	const {
+		checkFromLast,
+	} = {
+		checkFromLast: true,
+		...context.options[0],
+	};
 
-	return {
-		[zeroIndexSelector](node) {
-			return {
-				node: node.object.callee.property,
-				messageId: ERROR_ZERO_INDEX,
-				fix: fixer => [
-					fixer.replaceText(node.object.callee.property, 'find'),
-					removeMemberExpressionProperty(fixer, node, sourceCode),
-				],
-			};
-		},
-		[shiftSelector](node) {
-			return {
-				node: node.callee.object.callee.property,
-				messageId: ERROR_SHIFT,
-				fix: fixer => [
-					fixer.replaceText(node.callee.object.callee.property, 'find'),
-					...removeMethodCall(fixer, node, sourceCode),
-				],
-			};
-		},
-		[destructuringDeclaratorSelector](node) {
-			return {
-				node: node.init.callee.property,
-				messageId: ERROR_DESTRUCTURING_DECLARATION,
-				...fixDestructuringAndReplaceFilter(sourceCode, node),
-			};
-		},
-		[destructuringAssignmentSelector](node) {
-			return {
-				node: node.right.callee.property,
-				messageId: ERROR_DESTRUCTURING_ASSIGNMENT,
-				...fixDestructuringAndReplaceFilter(sourceCode, node),
-			};
-		},
-		[filterVariableSelector](node) {
-			const scope = context.getScope();
-			const variable = findVariable(scope, node.id);
-			const identifiers = getVariableIdentifiers(variable).filter(identifier => identifier !== node.id);
+	// Zero index access
+	context.on('MemberExpression', node => {
+		if (!(
+			node.computed
+			&& node.property.type === 'Literal'
+			&& node.property.raw === '0'
+			&& isArrayFilterCall(node.object)
+			&& !isLeftHandSide(node)
+		)) {
+			return;
+		}
 
-			if (identifiers.length === 0) {
+		return {
+			node: node.object.callee.property,
+			messageId: ERROR_ZERO_INDEX,
+			fix: fixer => [
+				fixer.replaceText(node.object.callee.property, 'find'),
+				removeMemberExpressionProperty(fixer, node, sourceCode),
+			],
+		};
+	});
+
+	// `array.filter().shift()`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'shift',
+				argumentsLength: 0,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& isArrayFilterCall(node.callee.object)
+		)) {
+			return;
+		}
+
+		return {
+			node: node.callee.object.callee.property,
+			messageId: ERROR_SHIFT,
+			fix: fixer => [
+				fixer.replaceText(node.callee.object.callee.property, 'find'),
+				...removeMethodCall(fixer, node, sourceCode),
+			],
+		};
+	});
+
+	// `const [foo] = array.filter()`
+	context.on('VariableDeclarator', node => {
+		if (!(
+			node.id.type === 'ArrayPattern'
+			&& node.id.elements.length === 1
+			&& node.id.elements[0]
+			&& node.id.elements[0].type !== 'RestElement'
+			&& isArrayFilterCall(node.init)
+		)) {
+			return;
+		}
+
+		return {
+			node: node.init.callee.property,
+			messageId: ERROR_DESTRUCTURING_DECLARATION,
+			...fixDestructuringAndReplaceFilter(sourceCode, node),
+		};
+	});
+
+	// `[foo] = array.filter()`
+	context.on('AssignmentExpression', node => {
+		if (!(
+			node.left.type === 'ArrayPattern'
+			&& node.left.elements.length === 1
+			&& node.left.elements[0]
+			&& node.left.elements[0].type !== 'RestElement'
+			&& isArrayFilterCall(node.right)
+		)) {
+			return;
+		}
+
+		return {
+			node: node.right.callee.property,
+			messageId: ERROR_DESTRUCTURING_ASSIGNMENT,
+			...fixDestructuringAndReplaceFilter(sourceCode, node),
+		};
+	});
+
+	// `const foo = array.filter(); foo[0]; [bar] = foo`
+	context.on('VariableDeclarator', node => {
+		if (!(
+			node.id.type === 'Identifier'
+			&& isArrayFilterCall(node.init)
+			&& node.parent.type === 'VariableDeclaration'
+			&& node.parent.declarations.includes(node)
+			// Exclude `export const foo = [];`
+			&& !(
+				node.parent.parent.type === 'ExportNamedDeclaration'
+				&& node.parent.parent.declaration === node.parent
+			)
+		)) {
+			return;
+		}
+
+		const scope = sourceCode.getScope(node);
+		const variable = findVariable(scope, node.id);
+		const identifiers = getVariableIdentifiers(variable).filter(identifier => identifier !== node.id);
+
+		if (identifiers.length === 0) {
+			return;
+		}
+
+		const zeroIndexNodes = [];
+		const destructuringNodes = [];
+		for (const identifier of identifiers) {
+			if (isAccessingZeroIndex(identifier)) {
+				zeroIndexNodes.push(identifier.parent);
+			} else if (isDestructuringFirstElement(identifier)) {
+				destructuringNodes.push(identifier.parent);
+			} else {
 				return;
 			}
+		}
 
-			const zeroIndexNodes = [];
-			const destructuringNodes = [];
-			for (const identifier of identifiers) {
-				if (isAccessingZeroIndex(identifier)) {
-					zeroIndexNodes.push(identifier.parent);
-				} else if (isDestructuringFirstElement(identifier)) {
-					destructuringNodes.push(identifier.parent);
-				} else {
-					return;
+		const problem = {
+			node: node.init.callee.property,
+			messageId: ERROR_DECLARATION,
+		};
+
+		// `const [foo = bar] = baz` is not fixable
+		if (!destructuringNodes.some(node => hasDefaultValue(node))) {
+			problem.fix = function * (fixer) {
+				yield fixer.replaceText(node.init.callee.property, 'find');
+
+				const singularName = singular(node.id.name);
+				if (singularName) {
+					// Rename variable to be singularized now that it refers to a single item in the array instead of the entire array.
+					const singularizedName = getAvailableVariableName(singularName, getScopes(scope));
+					yield * renameVariable(variable, singularizedName, fixer);
+
+					// Prevent possible variable conflicts
+					yield * extendFixRange(fixer, sourceCode.getRange(sourceCode.ast));
 				}
-			}
 
-			const problem = {
-				node: node.init.callee.property,
-				messageId: ERROR_DECLARATION,
+				for (const node of zeroIndexNodes) {
+					yield removeMemberExpressionProperty(fixer, node, sourceCode);
+				}
+
+				for (const node of destructuringNodes) {
+					yield * fixDestructuring(node, sourceCode, fixer);
+				}
 			};
+		}
 
-			// `const [foo = bar] = baz` is not fixable
-			if (!destructuringNodes.some(node => hasDefaultValue(node))) {
-				problem.fix = function * (fixer) {
-					yield fixer.replaceText(node.init.callee.property, 'find');
+		return problem;
+	});
 
-					const singularName = singular(node.id.name);
-					if (singularName) {
-						// Rename variable to be singularized now that it refers to a single item in the array instead of the entire array.
-						const singularizedName = avoidCapture(singularName, getScopes(scope));
-						yield * renameVariable(variable, singularizedName, fixer);
+	// `array.filter().at(0)`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'at',
+				argumentsLength: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& node.arguments[0].type === 'Literal'
+			&& node.arguments[0].raw === '0'
+			&& isArrayFilterCall(node.callee.object)
+		)) {
+			return;
+		}
 
-						// Prevent possible variable conflicts
-						yield * extendFixRange(fixer, sourceCode.ast.range);
-					}
+		return {
+			node: node.callee.object.callee.property,
+			messageId: ERROR_AT_ZERO,
+			fix: fixer => [
+				fixer.replaceText(node.callee.object.callee.property, 'find'),
+				...removeMethodCall(fixer, node, sourceCode),
+			],
+		};
+	});
 
-					for (const node of zeroIndexNodes) {
-						yield removeMemberExpressionProperty(fixer, node, sourceCode);
-					}
+	if (!checkFromLast) {
+		return;
+	}
 
-					for (const node of destructuringNodes) {
-						yield * fixDestructuring(node, sourceCode, fixer);
-					}
-				};
-			}
+	// `array.filter().pop()`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'pop',
+				argumentsLength: 0,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& isArrayFilterCall(node.callee.object)
+		)) {
+			return;
+		}
 
-			return problem;
-		},
-	};
+		return {
+			node: node.callee.object.callee.property,
+			messageId: ERROR_POP,
+			fix: fixer => [
+				fixer.replaceText(node.callee.object.callee.property, 'findLast'),
+				...removeMethodCall(fixer, node, sourceCode),
+			],
+		};
+	});
+
+	// `array.filter().at(-1)`
+	context.on('CallExpression', node => {
+		if (!(
+			isMethodCall(node, {
+				method: 'at',
+				argumentsLength: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& node.arguments[0].type === 'UnaryExpression'
+			&& node.arguments[0].operator === '-'
+			&& node.arguments[0].prefix
+			&& node.arguments[0].argument.type === 'Literal'
+			&& node.arguments[0].argument.raw === '1'
+			&& isArrayFilterCall(node.callee.object)
+		)) {
+			return;
+		}
+
+		return {
+			node: node.callee.object.callee.property,
+			messageId: ERROR_AT_MINUS_ONE,
+			fix: fixer => [
+				fixer.replaceText(node.callee.object.callee.property, 'findLast'),
+				...removeMethodCall(fixer, node, sourceCode),
+			],
+		};
+	});
 };
 
+const schema = [
+	{
+		type: 'object',
+		additionalProperties: false,
+		properties: {
+			checkFromLast: {
+				type: 'boolean',
+			},
+		},
+	},
+];
+
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Prefer `.find(…)` over the first element from `.filter(…)`.',
+			description: 'Prefer `.find(…)` and `.findLast(…)` over the first or last element from `.filter(…)`.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
+		schema,
+		defaultOptions: [{checkFromLast: true}],
 		messages,
 	},
 };
+
+export default config;

@@ -1,8 +1,5 @@
-'use strict';
-const {
-	removeParentheses,
-	removeMemberExpressionProperty,
-} = require('./fix/index.js');
+import {removeParentheses, removeMemberExpressionProperty} from './fix/index.js';
+import {isLiteral} from './ast/index.js';
 
 const MESSAGE_ID = 'no-await-expression-member';
 const messages = {
@@ -11,10 +8,14 @@ const messages = {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 
 	return {
-		'MemberExpression[object.type="AwaitExpression"]'(memberExpression) {
+		MemberExpression(memberExpression) {
+			if (memberExpression.object.type !== 'AwaitExpression') {
+				return;
+			}
+
 			const {property} = memberExpression;
 			const problem = {
 				node: property,
@@ -25,11 +26,11 @@ const create = context => {
 			if (
 				memberExpression.computed
 				&& !memberExpression.optional
-				&& property.type === 'Literal'
-				&& (property.value === 0 || property.value === 1)
+				&& (isLiteral(property, 0) || isLiteral(property, 1))
 				&& memberExpression.parent.type === 'VariableDeclarator'
 				&& memberExpression.parent.init === memberExpression
 				&& memberExpression.parent.id.type === 'Identifier'
+				&& !memberExpression.parent.id.typeAnnotation
 			) {
 				problem.fix = function * (fixer) {
 					const variable = memberExpression.parent.id;
@@ -52,6 +53,7 @@ const create = context => {
 				&& memberExpression.parent.init === memberExpression
 				&& memberExpression.parent.id.type === 'Identifier'
 				&& memberExpression.parent.id.name === property.name
+				&& !memberExpression.parent.id.typeAnnotation
 			) {
 				problem.fix = function * (fixer) {
 					const variable = memberExpression.parent.id;
@@ -71,15 +73,17 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Forbid member access from await expression.',
+			description: 'Disallow member access from await expression.',
+			recommended: true,
 		},
 		fixable: 'code',
-		schema: [],
 		messages,
 	},
 };
+
+export default config;

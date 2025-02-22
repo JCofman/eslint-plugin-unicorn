@@ -1,7 +1,12 @@
-'use strict';
-const path = require('path');
-const {camelCase, kebabCase, snakeCase, upperFirst} = require('lodash');
-const cartesianProductSamples = require('./utils/cartesian-product-samples.js');
+import path from 'node:path';
+import {isRegExp} from 'node:util/types';
+import {
+	camelCase,
+	kebabCase,
+	snakeCase,
+	upperFirst,
+} from './utils/lodash.js';
+import cartesianProductSamples from './utils/cartesian-product-samples.js';
 
 const MESSAGE_ID = 'filename-case';
 const MESSAGE_ID_EXTENSION = 'filename-extension';
@@ -85,7 +90,7 @@ function validateFilename(words, caseFunctions) {
 		.every(({word}) => caseFunctions.some(caseFunction => caseFunction(word) === word));
 }
 
-function fixFilename(words, caseFunctions, {leading, extension}) {
+function fixFilename(words, caseFunctions, {leading, trailing}) {
 	const replacements = words
 		.map(({word, ignored}) => ignored ? [word] : caseFunctions.map(caseFunction => caseFunction(word)));
 
@@ -93,7 +98,30 @@ function fixFilename(words, caseFunctions, {leading, extension}) {
 		samples: combinations,
 	} = cartesianProductSamples(replacements);
 
-	return [...new Set(combinations.map(parts => `${leading}${parts.join('')}${extension.toLowerCase()}`))];
+	return [...new Set(combinations.map(parts => `${leading}${parts.join('')}${trailing}`))];
+}
+
+function getFilenameParts(filenameWithExtension, {multipleFileExtensions}) {
+	const extension = path.extname(filenameWithExtension);
+	const filename = path.basename(filenameWithExtension, extension);
+	const basename = filename + extension;
+
+	const parts = {
+		basename,
+		filename,
+		middle: '',
+		extension,
+	};
+
+	if (multipleFileExtensions) {
+		const [firstPart] = filename.split('.');
+		Object.assign(parts, {
+			filename: firstPart,
+			middle: filename.slice(firstPart.length),
+		});
+	}
+
+	return parts;
 }
 
 const leadingUnderscoresRegex = /^(?<leading>_+)(?<tailing>.*)$/;
@@ -107,7 +135,7 @@ function splitFilename(filename) {
 	for (const char of tailing) {
 		const isIgnored = isIgnoredChar(char);
 
-		if (lastWord && lastWord.ignored === isIgnored) {
+		if (lastWord?.ignored === isIgnored) {
 			lastWord.word += char;
 		} else {
 			lastWord = {
@@ -130,43 +158,37 @@ Turns `[a, b, c]` into `a, b, or c`.
 @param {string[]} words
 @returns {string}
 */
-function englishishJoinWords(words) {
-	if (words.length === 1) {
-		return words[0];
-	}
-
-	if (words.length === 2) {
-		return `${words[0]} or ${words[1]}`;
-	}
-
-	return `${words.slice(0, -1).join(', ')}, or ${words[words.length - 1]}`;
-}
+const englishishJoinWords = words => new Intl.ListFormat('en-US', {type: 'disjunction'}).format(words);
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
 	const options = context.options[0] || {};
 	const chosenCases = getChosenCases(options);
 	const ignore = (options.ignore || []).map(item => {
-		if (item instanceof RegExp) {
+		if (isRegExp(item)) {
 			return item;
 		}
 
 		return new RegExp(item, 'u');
 	});
+	const multipleFileExtensions = options.multipleFileExtensions !== false;
 	const chosenCasesFunctions = chosenCases.map(case_ => ignoreNumbers(cases[case_].fn));
-	const filenameWithExtension = context.getPhysicalFilename();
+	const filenameWithExtension = context.physicalFilename;
 
 	if (filenameWithExtension === '<input>' || filenameWithExtension === '<text>') {
-		return {};
+		return;
 	}
 
 	return {
 		Program() {
-			const extension = path.extname(filenameWithExtension);
-			const filename = path.basename(filenameWithExtension, extension);
-			const base = filename + extension;
+			const {
+				basename,
+				filename,
+				middle,
+				extension,
+			} = getFilenameParts(filenameWithExtension, {multipleFileExtensions});
 
-			if (ignoredByDefault.has(base) || ignore.some(regexp => regexp.test(base))) {
+			if (ignoredByDefault.has(basename) || ignore.some(regexp => regexp.test(basename))) {
 				return;
 			}
 
@@ -178,7 +200,7 @@ const create = context => {
 					return {
 						loc: {column: 0, line: 1},
 						messageId: MESSAGE_ID_EXTENSION,
-						data: {filename: filename + extension.toLowerCase(), extension},
+						data: {filename: filename + middle + extension.toLowerCase(), extension},
 					};
 				}
 
@@ -187,7 +209,7 @@ const create = context => {
 
 			const renamedFilenames = fixFilename(words, chosenCasesFunctions, {
 				leading,
-				extension,
+				trailing: middle + extension.toLowerCase(),
 			});
 
 			return {
@@ -221,6 +243,9 @@ const schema = [
 						type: 'array',
 						uniqueItems: true,
 					},
+					multipleFileExtensions: {
+						type: 'boolean',
+					},
 				},
 				additionalProperties: false,
 			},
@@ -247,6 +272,9 @@ const schema = [
 						type: 'array',
 						uniqueItems: true,
 					},
+					multipleFileExtensions: {
+						type: 'boolean',
+					},
 				},
 				additionalProperties: false,
 			},
@@ -255,14 +283,19 @@ const schema = [
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Enforce a case style for filenames.',
+			recommended: true,
 		},
 		schema,
+		// eslint-disable-next-line eslint-plugin/require-meta-default-options
+		defaultOptions: [],
 		messages,
 	},
 };
+
+export default config;

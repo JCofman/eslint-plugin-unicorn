@@ -1,18 +1,14 @@
-'use strict';
-const cleanRegexp = require('clean-regexp');
-const {optimize} = require('regexp-tree');
-const quoteString = require('./utils/quote-string.js');
-const {newExpressionSelector} = require('./selectors/index.js');
+import cleanRegexp from 'clean-regexp';
+import regexpTree from 'regexp-tree';
+import escapeString from './utils/escape-string.js';
+import {isStringLiteral, isNewExpression, isRegexLiteral} from './ast/index.js';
 
 const MESSAGE_ID = 'better-regex';
+const MESSAGE_ID_PARSE_ERROR = 'better-regex/parse-error';
 const messages = {
 	[MESSAGE_ID]: '{{original}} can be optimized to {{optimized}}.',
+	[MESSAGE_ID_PARSE_ERROR]: 'Problem parsing {{original}}: {{error}}',
 };
-
-const newRegExp = [
-	newExpressionSelector({name: 'RegExp', minimumArguments: 1}),
-	'[arguments.0.type="Literal"]',
-].join('');
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
@@ -25,27 +21,30 @@ const create = context => {
 	}
 
 	return {
-		'Literal[regex]': node => {
-			const {raw: original, regex} = node;
+		Literal(node) {
+			if (!isRegexLiteral(node)) {
+				return;
+			}
 
-			// Regular Expressions with `u` flag are not well handled by `regexp-tree`
+			const {raw: original, regex} = node;
+			// Regular Expressions with `u` and `v` flag are not well handled by `regexp-tree`
 			// https://github.com/DmitrySoshnikov/regexp-tree/issues/162
-			if (regex.flags.includes('u')) {
+			if (regex.flags.includes('u') || regex.flags.includes('v')) {
 				return;
 			}
 
 			let optimized = original;
 
 			try {
-				optimized = optimize(original, undefined, {blacklist: ignoreList}).toString();
+				optimized = regexpTree.optimize(original, undefined, {blacklist: ignoreList}).toString();
 			} catch (error) {
 				return {
 					node,
+					messageId: MESSAGE_ID_PARSE_ERROR,
 					data: {
 						original,
 						error: error.message,
 					},
-					message: 'Problem parsing {{original}}: {{error}}',
 				};
 			}
 
@@ -53,29 +52,46 @@ const create = context => {
 				return;
 			}
 
-			return {
+			const problem = {
 				node,
 				messageId: MESSAGE_ID,
 				data: {
 					original,
 					optimized,
 				},
-				fix: fixer => fixer.replaceText(node, optimized),
 			};
+
+			if (
+				node.parent.type === 'MemberExpression'
+				&& node.parent.object === node
+				&& !node.parent.optional
+				&& !node.parent.computed
+				&& node.parent.property.type === 'Identifier'
+				&& (
+					node.parent.property.name === 'toString'
+					|| node.parent.property.name === 'source'
+				)
+			) {
+				return problem;
+			}
+
+			return Object.assign(problem, {
+				fix: fixer => fixer.replaceText(node, optimized),
+			});
 		},
-		[newRegExp]: node => {
+		NewExpression(node) {
+			if (!isNewExpression(node, {name: 'RegExp', minimumArguments: 1})) {
+				return;
+			}
+
 			const [patternNode, flagsNode] = node.arguments;
 
-			if (typeof patternNode.value !== 'string') {
+			if (!isStringLiteral(patternNode)) {
 				return;
 			}
 
 			const oldPattern = patternNode.value;
-			const flags = (
-				flagsNode
-				&& flagsNode.type === 'Literal'
-				&& typeof flagsNode.value === 'string'
-			)
+			const flags = isStringLiteral(flagsNode)
 				? flagsNode.value
 				: '';
 
@@ -91,7 +107,7 @@ const create = context => {
 					},
 					fix: fixer => fixer.replaceText(
 						patternNode,
-						quoteString(newPattern, patternNode.raw.charAt(0)),
+						escapeString(newPattern, patternNode.raw.charAt(0)),
 					),
 				};
 			}
@@ -106,22 +122,25 @@ const schema = [
 		properties: {
 			sortCharacterClasses: {
 				type: 'boolean',
-				default: true,
 			},
 		},
 	},
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Improve regexes by making them shorter, consistent, and safer.',
+			recommended: false,
 		},
 		fixable: 'code',
 		schema,
+		defaultOptions: [{sortCharacterClasses: true}],
 		messages,
 	},
 };
+
+export default config;

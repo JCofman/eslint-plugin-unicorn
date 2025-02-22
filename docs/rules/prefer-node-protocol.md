@@ -1,12 +1,13 @@
 # Prefer using the `node:` protocol when importing Node.js builtin modules
 
-✅ *This rule is part of the [recommended](https://github.com/sindresorhus/eslint-plugin-unicorn#recommended-config) config.*
+💼 This rule is enabled in the ✅ `recommended` [config](https://github.com/sindresorhus/eslint-plugin-unicorn#preset-configs-eslintconfigjs).
 
-🔧 *This rule is [auto-fixable](https://eslint.org/docs/user-guide/command-line-interface#fixing-problems).*
+🔧 This rule is automatically fixable by the [`--fix` CLI option](https://eslint.org/docs/latest/user-guide/command-line-interface#--fix).
 
-When importing builtin modules, it's better to use the [`node:` protocol](https://nodejs.org/api/esm.html#esm_node_imports) as it makes it perfectly clear that the package is a Node.js builtin module.
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
 
-And don't forget to [upvote this issue](https://github.com/nodejs/node/issues/38343) if you agree.
+When importing builtin modules, it's better to use the [`node:` protocol](https://nodejs.org/api/esm.html#node-imports) as it makes it perfectly clear that the package is a Node.js builtin module.
 
 ## Fail
 
@@ -37,31 +38,9 @@ import fs from 'node:fs/promises';
 ```
 
 ```js
-const fs = require('fs');
-```
-
-```js
 import _ from 'lodash';
 ```
 
 ```js
 import fs from './fs.js';
-```
-
-## Options
-
-Type: `object`
-
-### `checkRequire`
-
-Type: `boolean`\
-Default: `false`
-
-Currently, `require(…)` with the `node:` protocol is only available on Node.js 16. If you don't care about old versions, you can set this to `true`.
-
-We'll remove this option and check `require(…)` by default once this feature get backported to v12.
-
-```js
-// eslint unicorn/prefer-node-protocol: ["error", {"checkRequire": true}]
-const fs = require('fs'); // Fails
 ```

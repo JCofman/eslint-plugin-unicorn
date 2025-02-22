@@ -1,28 +1,21 @@
-'use strict';
-const {isParenthesized} = require('eslint-utils');
-const avoidCapture = require('./utils/avoid-capture.js');
-const needsSemicolon = require('./utils/needs-semicolon.js');
-const isSameReference = require('./utils/is-same-reference.js');
-const getIndentString = require('./utils/get-indent-string.js');
-const {getParenthesizedText} = require('./utils/parentheses.js');
-const shouldAddParenthesesToConditionalExpressionChild = require('./utils/should-add-parentheses-to-conditional-expression-child.js');
-const {extendFixRange} = require('./fix/index.js');
-const getScopes = require('./utils/get-scopes.js');
+import {isParenthesized} from '@eslint-community/eslint-utils';
+import {
+	getAvailableVariableName,
+	needsSemicolon,
+	isSameReference,
+	getIndentString,
+	getParenthesizedText,
+	shouldAddParenthesesToConditionalExpressionChild,
+	getScopes,
+} from './utils/index.js';
+import {extendFixRange} from './fix/index.js';
 
 const messageId = 'prefer-ternary';
 
-const selector = [
-	'IfStatement',
-	':not(IfStatement > .alternate)',
-	'[test.type!="ConditionalExpression"]',
-	'[consequent]',
-	'[alternate]',
-].join('');
-
-const isTernary = node => node && node.type === 'ConditionalExpression';
+const isTernary = node => node?.type === 'ConditionalExpression';
 
 function getNodeBody(node) {
-	/* istanbul ignore next */
+	/* c8 ignore next 3 */
 	if (!node) {
 		return;
 	}
@@ -41,12 +34,13 @@ function getNodeBody(node) {
 	return node;
 }
 
+// eslint-disable-next-line internal/no-restricted-property-access -- Need fix
 const isSingleLineNode = node => node.loc.start.line === node.loc.end.line;
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
 	const onlySingleLine = context.options[0] === 'only-single-line';
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 	const scopeToNamesGeneratedByFixer = new WeakMap();
 	const isSafeName = (name, scopes) => scopes.every(scope => {
 		const generatedNames = scopeToNamesGeneratedByFixer.get(scope);
@@ -174,7 +168,16 @@ const create = context => {
 	}
 
 	return {
-		[selector](node) {
+		IfStatement(node) {
+			if (
+				(node.parent.type === 'IfStatement' && node.parent.alternate === node)
+				|| node.test.type === 'ConditionalExpression'
+				|| !node.consequent
+				|| !node.alternate
+			) {
+				return;
+			}
+
 			const consequent = getNodeBody(node.consequent);
 			const alternate = getNodeBody(node.alternate);
 
@@ -194,61 +197,65 @@ const create = context => {
 				return;
 			}
 
-			const scope = context.getScope();
+			const problem = {node, messageId};
 
-			return {
-				node,
-				messageId,
-				* fix(fixer) {
-					const testText = getText(node.test);
-					const consequentText = typeof result.consequent === 'string'
-						? result.consequent
-						: getText(result.consequent);
-					const alternateText = typeof result.alternate === 'string'
-						? result.alternate
-						: getText(result.alternate);
+			// Don't fix if there are comments
+			if (sourceCode.getCommentsInside(node).length > 0) {
+				return problem;
+			}
 
-					let {type, before, after} = result;
+			const scope = sourceCode.getScope(node);
+			problem.fix = function * (fixer) {
+				const testText = getText(node.test);
+				const consequentText = typeof result.consequent === 'string'
+					? result.consequent
+					: getText(result.consequent);
+				const alternateText = typeof result.alternate === 'string'
+					? result.alternate
+					: getText(result.alternate);
 
-					let generateNewVariables = false;
-					if (type === 'ThrowStatement') {
-						const scopes = getScopes(scope);
-						const errorName = avoidCapture('error', scopes, isSafeName);
+				let {type, before, after} = result;
 
-						for (const scope of scopes) {
-							if (!scopeToNamesGeneratedByFixer.has(scope)) {
-								scopeToNamesGeneratedByFixer.set(scope, new Set());
-							}
+				let generateNewVariables = false;
+				if (type === 'ThrowStatement') {
+					const scopes = getScopes(scope);
+					const errorName = getAvailableVariableName('error', scopes, isSafeName);
 
-							const generatedNames = scopeToNamesGeneratedByFixer.get(scope);
-							generatedNames.add(errorName);
+					for (const scope of scopes) {
+						if (!scopeToNamesGeneratedByFixer.has(scope)) {
+							scopeToNamesGeneratedByFixer.set(scope, new Set());
 						}
 
-						const indentString = getIndentString(node, sourceCode);
-
-						after = after
-							.replace('{{INDENT_STRING}}', indentString)
-							.replace('{{ERROR_NAME}}', errorName);
-						before = before
-							.replace('{{INDENT_STRING}}', indentString)
-							.replace('{{ERROR_NAME}}', errorName);
-						generateNewVariables = true;
+						const generatedNames = scopeToNamesGeneratedByFixer.get(scope);
+						generatedNames.add(errorName);
 					}
 
-					let fixed = `${before}${testText} ? ${consequentText} : ${alternateText}${after}`;
-					const tokenBefore = sourceCode.getTokenBefore(node);
-					const shouldAddSemicolonBefore = needsSemicolon(tokenBefore, sourceCode, fixed);
-					if (shouldAddSemicolonBefore) {
-						fixed = `;${fixed}`;
-					}
+					const indentString = getIndentString(node, sourceCode);
 
-					yield fixer.replaceText(node, fixed);
+					after = after
+						.replace('{{INDENT_STRING}}', indentString)
+						.replace('{{ERROR_NAME}}', errorName);
+					before = before
+						.replace('{{INDENT_STRING}}', indentString)
+						.replace('{{ERROR_NAME}}', errorName);
+					generateNewVariables = true;
+				}
 
-					if (generateNewVariables) {
-						yield * extendFixRange(fixer, sourceCode.ast.range);
-					}
-				},
+				let fixed = `${before}${testText} ? ${consequentText} : ${alternateText}${after}`;
+				const tokenBefore = sourceCode.getTokenBefore(node);
+				const shouldAddSemicolonBefore = needsSemicolon(tokenBefore, sourceCode, fixed);
+				if (shouldAddSemicolonBefore) {
+					fixed = `;${fixed}`;
+				}
+
+				yield fixer.replaceText(node, fixed);
+
+				if (generateNewVariables) {
+					yield * extendFixRange(fixer, sourceCode.getRange(sourceCode.ast));
+				}
 			};
+
+			return problem;
 		},
 	};
 };
@@ -256,22 +263,25 @@ const create = context => {
 const schema = [
 	{
 		enum: ['always', 'only-single-line'],
-		default: 'always',
 	},
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer ternary expressions over simple `if-else` statements.',
+			recommended: true,
 		},
 		fixable: 'code',
 		schema,
+		defaultOptions: ['always'],
 		messages: {
 			[messageId]: 'This `if` statement can be replaced by a ternary expression.',
 		},
 	},
 };
+
+export default config;

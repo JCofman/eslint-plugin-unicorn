@@ -1,5 +1,4 @@
-'use strict';
-const {isParenthesized, isOpeningParenToken, isClosingParenToken} = require('eslint-utils');
+import {isParenthesized, isOpeningParenToken, isClosingParenToken} from '@eslint-community/eslint-utils';
 
 /*
 Get how many times the node is parenthesized.
@@ -8,12 +7,7 @@ Get how many times the node is parenthesized.
 @param {SourceCode} sourceCode - The source code object.
 @returns {number}
 */
-function getParenthesizedTimes(node, sourceCode) {
-	// Workaround for https://github.com/mysticatea/eslint-utils/pull/25
-	if (!node.parent) {
-		return 0;
-	}
-
+export function getParenthesizedTimes(node, sourceCode) {
 	let times = 0;
 
 	while (isParenthesized(times + 1, node, sourceCode)) {
@@ -30,7 +24,7 @@ Get all parentheses tokens around the node.
 @param {SourceCode} sourceCode - The source code object.
 @returns {Token[]}
 */
-function getParentheses(node, sourceCode) {
+export function getParentheses(node, sourceCode) {
 	const count = getParenthesizedTimes(node, sourceCode);
 
 	if (count === 0) {
@@ -50,10 +44,10 @@ Get the parenthesized range of the node.
 @param {SourceCode} sourceCode - The source code object.
 @returns {number[]}
 */
-function getParenthesizedRange(node, sourceCode) {
+export function getParenthesizedRange(node, sourceCode) {
 	const parentheses = getParentheses(node, sourceCode);
 	const [start] = (parentheses[0] || node).range;
-	const [, end] = (parentheses[parentheses.length - 1] || node).range;
+	const [, end] = (parentheses.at(-1) || node).range;
 	return [start, end];
 }
 
@@ -64,15 +58,9 @@ Get the parenthesized text of the node.
 @param {SourceCode} sourceCode - The source code object.
 @returns {string}
 */
-function getParenthesizedText(node, sourceCode) {
+export function getParenthesizedText(node, sourceCode) {
 	const [start, end] = getParenthesizedRange(node, sourceCode);
 	return sourceCode.text.slice(start, end);
 }
 
-module.exports = {
-	isParenthesized,
-	getParenthesizedTimes,
-	getParentheses,
-	getParenthesizedRange,
-	getParenthesizedText,
-};
+export {isParenthesized} from '@eslint-community/eslint-utils';

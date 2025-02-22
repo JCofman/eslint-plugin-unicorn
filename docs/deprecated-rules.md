@@ -1,16 +1,28 @@
-# Deprecated Rules
+# Deprecated/Removed Rules
+
+## import-index
+
+This rule is outdated. JavaScript modules (ESM) do not support importing a directory.
 
 ## no-array-instanceof
 
-This rule was renamed to [`no-instanceof-array`](rules/no-instanceof-array.md) to be more correct.
+Replaced by [`no-instanceof-builtins`](rules/no-instanceof-builtins.md) which covers more cases.
 
 ## no-fn-reference-in-iterator
 
 This rule was renamed to [`no-array-callback-reference`](rules/no-array-callback-reference.md) to avoid using the abbreviation `fn` in the name.
 
+## no-instanceof-array
+
+Replaced by [`no-instanceof-builtins`](rules/no-instanceof-builtins.md) which covers more cases.
+
 ## no-reduce
 
 This rule was renamed to [`no-array-reduce`](rules/no-array-reduce.md) to be more specific.
+
+## no-unsafe-regex
+
+Removed due to bugs.
 
 ## prefer-dataset
 

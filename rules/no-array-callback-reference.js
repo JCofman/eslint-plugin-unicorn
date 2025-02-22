@@ -1,7 +1,12 @@
-'use strict';
-const {isParenthesized} = require('eslint-utils');
-const {methodCallSelector, notFunctionSelector} = require('./selectors/index.js');
-const {isNodeMatches} = require('./utils/is-node-matches.js');
+import {isMethodCall} from './ast/index.js';
+import {
+	isNodeMatches,
+	isNodeValueNotFunction,
+	isParenthesized,
+	getParenthesizedRange,
+	getParenthesizedText,
+	shouldAddParenthesesToCallExpressionCallee,
+} from './utils/index.js';
 
 const ERROR_WITH_NAME_MESSAGE_ID = 'error-with-name';
 const ERROR_WITHOUT_NAME_MESSAGE_ID = 'error-without-name';
@@ -14,104 +19,131 @@ const messages = {
 	[REPLACE_WITHOUT_NAME_MESSAGE_ID]: 'Replace function with `… => …({{parameters}})`.',
 };
 
-const iteratorMethods = [
-	[
-		'every',
-		{
-			ignore: [
-				'Boolean',
-			],
-		},
-	],
-	[
-		'filter', {
-			extraSelector: '[callee.object.name!="Vue"]',
-			ignore: [
-				'Boolean',
-			],
-		},
-	],
-	[
-		'find',
-		{
-			ignore: [
-				'Boolean',
-			],
-		},
-	],
-	[
-		'findIndex',
-		{
-			ignore: [
-				'Boolean',
-			],
-		},
-	],
-	[
-		'flatMap',
-	],
-	[
-		'forEach',
-		{
-			returnsUndefined: true,
-		},
-	],
-	[
-		'map',
-		{
-			extraSelector: '[callee.object.name!="types"]',
-			ignore: [
-				'String',
-				'Number',
-				'BigInt',
-				'Boolean',
-				'Symbol',
-			],
-		},
-	],
-	[
-		'reduce',
-		{
-			parameters: [
-				'accumulator',
-				'element',
-				'index',
-				'array',
-			],
-			minParameters: 2,
-		},
-	],
-	[
-		'reduceRight',
-		{
-			parameters: [
-				'accumulator',
-				'element',
-				'index',
-				'array',
-			],
-			minParameters: 2,
-		},
-	],
-	[
-		'some',
-		{
-			ignore: [
-				'Boolean',
-			],
-		},
-	],
-].map(([method, options]) => {
-	options = {
-		parameters: ['element', 'index', 'array'],
-		ignore: [],
-		minParameters: 1,
-		extraSelector: '',
-		returnsUndefined: false,
-		...options,
-	};
-	return [method, options];
-});
+const isAwaitExpressionArgument = node => node.parent.type === 'AwaitExpression' && node.parent.argument === node;
+
+const iteratorMethods = new Map([
+	{
+		method: 'every',
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'filter',
+		shouldIgnoreCallExpression: node => (node.callee.object.type === 'Identifier' && node.callee.object.name === 'Vue'),
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'find',
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'findLast',
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'findIndex',
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'findLastIndex',
+		ignore: [
+			'Boolean',
+		],
+	},
+	{
+		method: 'flatMap',
+	},
+	{
+		method: 'forEach',
+		returnsUndefined: true,
+	},
+	{
+		method: 'map',
+		shouldIgnoreCallExpression: node => (node.callee.object.type === 'Identifier' && node.callee.object.name === 'types'),
+		ignore: [
+			'String',
+			'Number',
+			'BigInt',
+			'Boolean',
+			'Symbol',
+		],
+	},
+	{
+		method: 'reduce',
+		parameters: [
+			'accumulator',
+			'element',
+			'index',
+			'array',
+		],
+		minParameters: 2,
+	},
+	{
+		method: 'reduceRight',
+		parameters: [
+			'accumulator',
+			'element',
+			'index',
+			'array',
+		],
+		minParameters: 2,
+	},
+	{
+		method: 'some',
+		ignore: [
+			'Boolean',
+		],
+	},
+].map(({
+	method,
+	parameters = ['element', 'index', 'array'],
+	ignore = [],
+	minParameters = 1,
+	returnsUndefined = false,
+	shouldIgnoreCallExpression,
+}) => [method, {
+	minParameters,
+	parameters,
+	returnsUndefined,
+	shouldIgnoreCallExpression(callExpression) {
+		if (
+			method !== 'reduce'
+			&& method !== 'reduceRight'
+			&& isAwaitExpressionArgument(callExpression)
+		) {
+			return true;
+		}
+
+		if (isNodeMatches(callExpression.callee.object, ignoredCallee)) {
+			return true;
+		}
+
+		if (
+			callExpression.callee.object.type === 'CallExpression'
+			&& isNodeMatches(callExpression.callee.object.callee, ignoredCallee)
+		) {
+			return true;
+		}
+
+		return shouldIgnoreCallExpression?.(callExpression) ?? false;
+	},
+	shouldIgnoreCallback(callback) {
+		if (callback.type === 'Identifier' && ignore.includes(callback.name)) {
+			return true;
+		}
+
+		return false;
+	},
+}]));
 
 const ignoredCallee = [
 	// http://bluebirdjs.com/docs/api/promise.map.html
@@ -133,10 +165,6 @@ function getProblem(context, node, method, options) {
 
 	const name = type === 'Identifier' ? node.name : '';
 
-	if (type === 'Identifier' && options.ignore.includes(name)) {
-		return;
-	}
-
 	const problem = {
 		node,
 		messageId: name ? ERROR_WITH_NAME_MESSAGE_ID : ERROR_WITHOUT_NAME_MESSAGE_ID,
@@ -144,8 +172,13 @@ function getProblem(context, node, method, options) {
 			name,
 			method,
 		},
-		suggest: [],
 	};
+
+	if (node.type === 'YieldExpression' || node.type === 'AwaitExpression') {
+		return problem;
+	}
+
+	problem.suggest = [];
 
 	const {parameters, minParameters, returnsUndefined} = options;
 	for (let parameterLength = minParameters; parameterLength <= parameters.length; parameterLength++) {
@@ -157,18 +190,22 @@ function getProblem(context, node, method, options) {
 				name,
 				parameters: suggestionParameters,
 			},
-			fix: fixer => {
-				const sourceCode = context.getSourceCode();
-				let nodeText = sourceCode.getText(node);
-				if (isParenthesized(node, sourceCode) || type === 'ConditionalExpression') {
-					nodeText = `(${nodeText})`;
+			fix(fixer) {
+				const {sourceCode} = context;
+				let text = getParenthesizedText(node, sourceCode);
+
+				if (
+					!isParenthesized(node, sourceCode)
+					&& shouldAddParenthesesToCallExpressionCallee(node)
+				) {
+					text = `(${text})`;
 				}
 
-				return fixer.replaceText(
-					node,
+				return fixer.replaceTextRange(
+					getParenthesizedRange(node, sourceCode),
 					returnsUndefined
-						? `(${suggestionParameters}) => { ${nodeText}(${suggestionParameters}); }`
-						: `(${suggestionParameters}) => ${nodeText}(${suggestionParameters})`,
+						? `(${suggestionParameters}) => { ${text}(${suggestionParameters}); }`
+						: `(${suggestionParameters}) => ${text}(${suggestionParameters})`,
 				);
 			},
 		};
@@ -179,57 +216,72 @@ function getProblem(context, node, method, options) {
 	return problem;
 }
 
-const ignoredFirstArgumentSelector = [
-	notFunctionSelector('arguments.0'),
-	// Ignore all `CallExpression`s include `function.bind()`
-	'[arguments.0.type!="CallExpression"]',
-	'[arguments.0.type!="FunctionExpression"]',
-	'[arguments.0.type!="ArrowFunctionExpression"]',
-].join('');
-
-/** @param {import('eslint').Rule.RuleContext} context */
-const create = context => {
-	const sourceCode = context.getSourceCode();
-	const rules = {};
-
-	for (const [method, options] of iteratorMethods) {
-		const selector = [
-			method === 'reduce' || method === 'reduceRight' ? '' : ':not(AwaitExpression) > ',
-			methodCallSelector({
-				method,
-				minimumArguments: 1,
-				maximumArguments: 2,
-			}),
-			options.extraSelector,
-			ignoredFirstArgumentSelector,
-		].join('');
-
-		rules[selector] = node => {
-			if (isNodeMatches(node.callee.object, ignoredCallee)) {
-				return;
-			}
-
-			if (node.callee.object.type === 'CallExpression' && isNodeMatches(node.callee.object.callee, ignoredCallee)) {
-				return;
-			}
-
-			const [iterator] = node.arguments;
-			return getProblem(context, iterator, method, options, sourceCode);
-		};
+function * getTernaryConsequentAndALternate(node) {
+	if (node.type === 'ConditionalExpression') {
+		yield * getTernaryConsequentAndALternate(node.consequent);
+		yield * getTernaryConsequentAndALternate(node.alternate);
+		return;
 	}
 
-	return rules;
-};
+	yield node;
+}
+
+/** @param {import('eslint').Rule.RuleContext} context */
+const create = context => ({
+	* CallExpression(callExpression) {
+		if (
+			!isMethodCall(callExpression, {
+				minimumArguments: 1,
+				maximumArguments: 2,
+				optionalCall: false,
+				optionalMember: false,
+				computed: false,
+			})
+			|| callExpression.callee.property.type !== 'Identifier'
+		) {
+			return;
+		}
+
+		const methodNode = callExpression.callee.property;
+		const methodName = methodNode.name;
+		if (!iteratorMethods.has(methodName)) {
+			return;
+		}
+
+		const options = iteratorMethods.get(methodName);
+		if (options.shouldIgnoreCallExpression(callExpression)) {
+			return;
+		}
+
+		for (const callback of getTernaryConsequentAndALternate(callExpression.arguments[0])) {
+			if (
+				callback.type === 'FunctionExpression'
+				|| callback.type === 'ArrowFunctionExpression'
+				// Ignore all `CallExpression`s include `function.bind()`
+				|| callback.type === 'CallExpression'
+				|| options.shouldIgnoreCallback(callback)
+				|| isNodeValueNotFunction(callback)
+			) {
+				continue;
+			}
+
+			yield getProblem(context, callback, methodName, options);
+		}
+	},
+});
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'problem',
 		docs: {
 			description: 'Prevent passing a function reference directly to iterator methods.',
+			recommended: true,
 		},
 		hasSuggestions: true,
 		messages,
 	},
 };
+
+export default config;

@@ -1,52 +1,48 @@
-'use strict';
-const {matches} = require('./selectors/index.js');
-const {switchCallExpressionToNewExpression} = require('./fix/index.js');
+import {switchCallExpressionToNewExpression} from './fix/index.js';
 
 const messageId = 'throw-new-error';
 const messages = {
-	[messageId]: 'Use `new` when throwing an error.',
+	[messageId]: 'Use `new` when creating an error.',
 };
 
 const customError = /^(?:[A-Z][\da-z]*)*Error$/;
 
-const selector = [
-	'ThrowStatement',
-	' > ',
-	'CallExpression.argument',
-	matches([
-		// `throw FooError()`
-		[
-			'[callee.type="Identifier"]',
-			`[callee.name=/${customError.source}/]`,
-		].join(''),
-		// `throw lib.FooError()`
-		[
-			'[callee.type="MemberExpression"]',
-			'[callee.computed=false]',
-			'[callee.property.type="Identifier"]',
-			`[callee.property.name=/${customError.source}/]`,
-		].join(''),
-	]),
-].join('');
-
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => ({
-	[selector]: node => ({
-		node,
-		messageId,
-		fix: fixer => switchCallExpressionToNewExpression(node, context.getSourceCode(), fixer),
-	}),
+	CallExpression(node) {
+		const {callee} = node;
+		if (!(
+			(callee.type === 'Identifier' && customError.test(callee.name))
+			|| (
+				callee.type === 'MemberExpression'
+				&& !callee.computed
+				&& callee.property.type === 'Identifier'
+				&& customError.test(callee.property.name)
+			)
+		)) {
+			return;
+		}
+
+		return {
+			node,
+			messageId,
+			fix: fixer => switchCallExpressionToNewExpression(node, context.sourceCode, fixer),
+		};
+	},
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Require `new` when throwing an error.',
+			description: 'Require `new` when creating an error.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

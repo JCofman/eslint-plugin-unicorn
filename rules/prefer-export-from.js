@@ -1,9 +1,6 @@
-'use strict';
-const {
-	isCommaToken,
-	isOpeningBraceToken,
-	isClosingBraceToken,
-} = require('eslint-utils');
+import {isOpeningBraceToken} from '@eslint-community/eslint-utils';
+import {isStringLiteral} from './ast/index.js';
+import {removeSpecifier} from './fix/index.js';
 
 const MESSAGE_ID_ERROR = 'error';
 const MESSAGE_ID_SUGGESTION = 'suggestion';
@@ -18,55 +15,20 @@ const NAMESPACE_SPECIFIER_NAME = Symbol('NAMESPACE_SPECIFIER_NAME');
 
 const getSpecifierName = node => {
 	switch (node.type) {
-		case 'Identifier':
+		case 'Identifier': {
 			return Symbol.for(node.name);
-		case 'Literal':
+		}
+
+		case 'Literal': {
 			return node.value;
+		}
 		// No default
 	}
 };
 
-function * removeSpecifier(node, fixer, sourceCode) {
-	const {parent} = node;
-	const {specifiers} = parent;
+const isTypeExport = specifier => specifier.exportKind === 'type' || specifier.parent.exportKind === 'type';
 
-	if (specifiers.length === 1) {
-		yield * removeImportOrExport(parent, fixer, sourceCode);
-		return;
-	}
-
-	switch (node.type) {
-		case 'ImportSpecifier': {
-			const hasOtherSpecifiers = specifiers.some(specifier => specifier !== node && specifier.type === node.type);
-			if (!hasOtherSpecifiers) {
-				const closingBraceToken = sourceCode.getTokenAfter(node, isClosingBraceToken);
-
-				// If there are other specifiers, they have to be the default import specifier
-				// And the default import has to write before the named import specifiers
-				// So there must be a comma before
-				const commaToken = sourceCode.getTokenBefore(node, isCommaToken);
-				yield fixer.replaceTextRange([commaToken.range[0], closingBraceToken.range[1]], '');
-				return;
-			}
-			// Fallthrough
-		}
-
-		case 'ExportSpecifier':
-		case 'ImportNamespaceSpecifier':
-		case 'ImportDefaultSpecifier': {
-			yield fixer.remove(node);
-
-			const tokenAfter = sourceCode.getTokenAfter(node);
-			if (isCommaToken(tokenAfter)) {
-				yield fixer.remove(tokenAfter);
-			}
-
-			break;
-		}
-
-		// No default
-	}
-}
+const isTypeImport = specifier => specifier.importKind === 'type' || specifier.parent.importKind === 'type';
 
 function * removeImportOrExport(node, fixer, sourceCode) {
 	switch (node.type) {
@@ -93,8 +55,8 @@ function getSourceAndAssertionsText(declaration, sourceCode) {
 		declaration.source,
 		token => token.type === 'Identifier' && token.value === 'from',
 	);
-	const [start] = keywordFromToken.range;
-	const [, end] = declaration.range;
+	const [start] = sourceCode.getRange(keywordFromToken);
+	const [, end] = sourceCode.getRange(declaration);
 	return sourceCode.text.slice(start, end);
 }
 
@@ -108,7 +70,15 @@ function getFixFunction({
 	const importDeclaration = imported.declaration;
 	const sourceNode = importDeclaration.source;
 	const sourceValue = sourceNode.value;
-	const exportDeclaration = exportDeclarations.find(({source}) => source.value === sourceValue);
+	const shouldExportAsType = imported.isTypeImport || exported.isTypeExport;
+
+	let exportDeclaration;
+	if (shouldExportAsType) {
+		// If a type export declaration already exists, reuse it, else use a value export declaration with an inline type specifier.
+		exportDeclaration = exportDeclarations.find(({source, exportKind}) => source.value === sourceValue && exportKind === 'type');
+	}
+
+	exportDeclaration ||= exportDeclarations.find(({source, exportKind}) => source.value === sourceValue && exportKind !== 'type');
 
 	/** @param {import('eslint').Rule.RuleFixer} fixer */
 	return function * (fixer) {
@@ -118,24 +88,29 @@ function getFixFunction({
 				`\nexport * as ${exported.text} ${getSourceAndAssertionsText(importDeclaration, sourceCode)}`,
 			);
 		} else {
-			const specifier = exported.name === imported.name
+			let specifierText = exported.name === imported.name
 				? exported.text
 				: `${imported.text} as ${exported.text}`;
 
+			// Add an inline type specifier if the value is a type and the export deceleration is a value deceleration
+			if (shouldExportAsType && (!exportDeclaration || exportDeclaration.exportKind !== 'type')) {
+				specifierText = `type ${specifierText}`;
+			}
+
 			if (exportDeclaration) {
-				const lastSpecifier = exportDeclaration.specifiers[exportDeclaration.specifiers.length - 1];
+				const lastSpecifier = exportDeclaration.specifiers.at(-1);
 
 				// `export {} from 'foo';`
 				if (lastSpecifier) {
-					yield fixer.insertTextAfter(lastSpecifier, `, ${specifier}`);
+					yield fixer.insertTextAfter(lastSpecifier, `, ${specifierText}`);
 				} else {
 					const openingBraceToken = sourceCode.getFirstToken(exportDeclaration, isOpeningBraceToken);
-					yield fixer.insertTextAfter(openingBraceToken, specifier);
+					yield fixer.insertTextAfter(openingBraceToken, specifierText);
 				}
 			} else {
 				yield fixer.insertTextAfter(
 					program,
-					`\nexport {${specifier}} ${getSourceAndAssertionsText(importDeclaration, sourceCode)}`,
+					`\nexport {${specifierText}} ${getSourceAndAssertionsText(importDeclaration, sourceCode)}`,
 				);
 			}
 		}
@@ -148,22 +123,26 @@ function getFixFunction({
 	};
 }
 
-function getExported(identifier, context, sourceCode) {
+function getExported(identifier, sourceCode) {
 	const {parent} = identifier;
 	switch (parent.type) {
-		case 'ExportDefaultDeclaration':
+		case 'ExportDefaultDeclaration': {
 			return {
 				node: parent,
 				name: DEFAULT_SPECIFIER_NAME,
 				text: 'default',
+				isTypeExport: isTypeExport(parent),
 			};
+		}
 
-		case 'ExportSpecifier':
+		case 'ExportSpecifier': {
 			return {
 				node: parent,
 				name: getSpecifierName(parent.exported),
 				text: sourceCode.getText(parent.exported),
+				isTypeExport: isTypeExport(parent),
 			};
+		}
 
 		case 'VariableDeclarator': {
 			if (
@@ -175,7 +154,7 @@ function getExported(identifier, context, sourceCode) {
 				&& parent.parent.declarations.length === 1
 				&& parent.parent.declarations[0] === parent
 				&& parent.parent.parent.type === 'ExportNamedDeclaration'
-				&& isVariableUnused(parent, context)
+				&& isVariableUnused(parent, sourceCode)
 			) {
 				return {
 					node: parent.parent.parent,
@@ -191,10 +170,10 @@ function getExported(identifier, context, sourceCode) {
 	}
 }
 
-function isVariableUnused(node, context) {
-	const variables = context.getDeclaredVariables(node);
+function isVariableUnused(node, sourceCode) {
+	const variables = sourceCode.getDeclaredVariables(node);
 
-	/* istanbul ignore next */
+	/* c8 ignore next 3 */
 	if (variables.length !== 1) {
 		return false;
 	}
@@ -212,38 +191,42 @@ function getImported(variable, sourceCode) {
 		node: specifier,
 		declaration: specifier.parent,
 		variable,
+		isTypeImport: isTypeImport(specifier),
 	};
 
 	switch (specifier.type) {
-		case 'ImportDefaultSpecifier':
+		case 'ImportDefaultSpecifier': {
 			return {
 				name: DEFAULT_SPECIFIER_NAME,
 				text: 'default',
 				...result,
 			};
+		}
 
-		case 'ImportSpecifier':
+		case 'ImportSpecifier': {
 			return {
 				name: getSpecifierName(specifier.imported),
 				text: sourceCode.getText(specifier.imported),
 				...result,
 			};
+		}
 
-		case 'ImportNamespaceSpecifier':
+		case 'ImportNamespaceSpecifier': {
 			return {
 				name: NAMESPACE_SPECIFIER_NAME,
 				text: '*',
 				...result,
 			};
+		}
 
 		// No default
 	}
 }
 
-function getExports(imported, context, sourceCode) {
+function getExports(imported, sourceCode) {
 	const exports = [];
 	for (const {identifier} of imported.variable.references) {
-		const exported = getExported(identifier, context, sourceCode);
+		const exported = getExported(identifier, sourceCode);
 
 		if (!exported) {
 			continue;
@@ -274,7 +257,6 @@ const schema = [
 		properties: {
 			ignoreUsedVariables: {
 				type: 'boolean',
-				default: false,
 			},
 		},
 	},
@@ -282,22 +264,26 @@ const schema = [
 
 /** @param {import('eslint').Rule.RuleContext} context */
 function create(context) {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 	const {ignoreUsedVariables} = {ignoreUsedVariables: false, ...context.options[0]};
 	const importDeclarations = new Set();
 	const exportDeclarations = [];
 
 	return {
-		'ImportDeclaration[specifiers.length>0]'(node) {
-			importDeclarations.add(node);
+		ImportDeclaration(node) {
+			if (node.specifiers.length > 0) {
+				importDeclarations.add(node);
+			}
 		},
 		// `ExportAllDeclaration` and `ExportDefaultDeclaration` can't be reused
-		'ExportNamedDeclaration[source.type="Literal"]'(node) {
-			exportDeclarations.push(node);
+		ExportNamedDeclaration(node) {
+			if (isStringLiteral(node.source)) {
+				exportDeclarations.push(node);
+			}
 		},
 		* 'Program:exit'(program) {
 			for (const importDeclaration of importDeclarations) {
-				let variables = context.getDeclaredVariables(importDeclaration);
+				let variables = sourceCode.getDeclaredVariables(importDeclaration);
 
 				if (variables.some(variable => variable.defs.length !== 1 || variable.defs[0].parent !== importDeclaration)) {
 					continue;
@@ -305,7 +291,7 @@ function create(context) {
 
 				variables = variables.map(variable => {
 					const imported = getImported(variable, sourceCode);
-					const exports = getExports(imported, context, sourceCode);
+					const exports = getExports(imported, sourceCode);
 
 					return {
 						variable,
@@ -361,16 +347,20 @@ function create(context) {
 }
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `export…from` when re-exporting.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		schema,
+		defaultOptions: [{ignoreUsedVariables: false}],
 		messages,
 	},
 };
+
+export default config;

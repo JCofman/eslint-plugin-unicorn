@@ -1,34 +1,40 @@
-'use strict';
-const {getFunctionHeadLocation} = require('eslint-utils');
-const getDocumentationUrl = require('./utils/get-documentation-url.js');
-const {methodCallSelector, matches} = require('./selectors/index.js');
+import {getFunctionHeadLocation} from '@eslint-community/eslint-utils';
+import {isMethodCall} from './ast/index.js';
 
 const MESSAGE_ID = 'no-invalid-remove-event-listener';
 const messages = {
 	[MESSAGE_ID]: 'The listener argument should be a function reference.',
 };
 
-const removeEventListenerSelector = [
-	methodCallSelector({
-		method: 'removeEventListener',
-		minimumArguments: 2,
-	}),
-	'[arguments.0.type!="SpreadElement"]',
-	matches([
-		'[arguments.1.type="FunctionExpression"]',
-		'[arguments.1.type="ArrowFunctionExpression"]',
-		methodCallSelector({method: 'bind', path: 'arguments.1'}),
-	]),
-].join('');
-
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => ({
-	[removeEventListenerSelector]: node => {
-		const listener = node.arguments[1];
+	CallExpression(callExpression) {
+		if (!(
+			isMethodCall(callExpression, {
+				method: 'removeEventListener',
+				minimumArguments: 2,
+				optionalCall: false,
+				optionalMember: false,
+			})
+			&& callExpression.arguments[0].type !== 'SpreadElement'
+			&& (
+				callExpression.arguments[1].type === 'FunctionExpression'
+				|| callExpression.arguments[1].type === 'ArrowFunctionExpression'
+				|| isMethodCall(callExpression.arguments[1], {
+					method: 'bind',
+					optionalCall: false,
+					optionalMember: false,
+				})
+			)
+		)) {
+			return;
+		}
+
+		const [, listener] = callExpression.arguments;
 		if (['ArrowFunctionExpression', 'FunctionExpression'].includes(listener.type)) {
 			return {
 				node: listener,
-				loc: getFunctionHeadLocation(listener, context.getSourceCode()),
+				loc: getFunctionHeadLocation(listener, context.sourceCode),
 				messageId: MESSAGE_ID,
 			};
 		}
@@ -41,15 +47,16 @@ const create = context => ({
 });
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'problem',
 		docs: {
 			description: 'Prevent calling `EventTarget#removeEventListener()` with the result of an expression.',
-			url: getDocumentationUrl(__filename),
+			recommended: true,
 		},
-		schema: [],
 		messages,
 	},
 };
+
+export default config;

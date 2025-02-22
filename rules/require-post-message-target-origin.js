@@ -1,53 +1,53 @@
-'use strict';
-const {methodCallSelector} = require('./selectors/index.js');
-const {appendArgument} = require('./fix/index.js');
+import {isMethodCall} from './ast/index.js';
+import {appendArgument} from './fix/index.js';
 
 const ERROR = 'error';
-const SUGGESTION_TARGET_LOCATION_ORIGIN = 'target-location-origin';
-const SUGGESTION_SELF_LOCATION_ORIGIN = 'self-location-origin';
-const SUGGESTION_STAR = 'star';
+const SUGGESTION = 'suggestion';
 const messages = {
 	[ERROR]: 'Missing the `targetOrigin` argument.',
-	[SUGGESTION_TARGET_LOCATION_ORIGIN]: 'Use `{{target}}.location.origin`.',
-	[SUGGESTION_SELF_LOCATION_ORIGIN]: 'Use `self.location.origin`.',
-	[SUGGESTION_STAR]: 'Use `"*"`.',
+	[SUGGESTION]: 'Use `{{code}}`.',
 };
 
 /** @param {import('eslint').Rule.RuleContext} context */
 function create(context) {
-	const sourceCode = context.getSourceCode();
+	const {sourceCode} = context;
 	return {
-		[methodCallSelector({method: 'postMessage', argumentsLength: 1})](node) {
+		CallExpression(node) {
+			if (!isMethodCall(node, {
+				method: 'postMessage',
+				argumentsLength: 1,
+				optionalCall: false,
+				optionalMember: false,
+			})) {
+				return;
+			}
+
 			const [penultimateToken, lastToken] = sourceCode.getLastTokens(node, 2);
-			const suggestions = [];
+			const replacements = [];
 			const target = node.callee.object;
 			if (target.type === 'Identifier') {
 				const {name} = target;
 
-				suggestions.push({
-					messageId: SUGGESTION_TARGET_LOCATION_ORIGIN,
-					data: {target: name},
-					code: `${target.name}.location.origin`,
-				});
+				replacements.push(`${name}.location.origin`);
 
 				if (name !== 'self' && name !== 'window' && name !== 'globalThis') {
-					suggestions.push({messageId: SUGGESTION_SELF_LOCATION_ORIGIN, code: 'self.location.origin'});
+					replacements.push('self.location.origin');
 				}
 			} else {
-				suggestions.push({messageId: SUGGESTION_SELF_LOCATION_ORIGIN, code: 'self.location.origin'});
+				replacements.push('self.location.origin');
 			}
 
-			suggestions.push({messageId: SUGGESTION_STAR, code: '\'*\''});
+			replacements.push('\'*\'');
 
 			return {
 				loc: {
-					start: penultimateToken.loc.end,
-					end: lastToken.loc.end,
+					start: sourceCode.getLoc(penultimateToken).end,
+					end: sourceCode.getLoc(lastToken).end,
 				},
 				messageId: ERROR,
-				suggest: suggestions.map(({messageId, data, code}) => ({
-					messageId,
-					data,
+				suggest: replacements.map(code => ({
+					messageId: SUGGESTION,
+					data: {code},
 					/** @param {import('eslint').Rule.RuleFixer} fixer */
 					fix: fixer => appendArgument(fixer, node, code, sourceCode),
 				})),
@@ -57,14 +57,19 @@ function create(context) {
 }
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'problem',
 		docs: {
 			description: 'Enforce using the `targetOrigin` argument with `window.postMessage()`.',
+			// Turned off because we can't distinguish `window.postMessage` and `{Worker,MessagePort,Client,BroadcastChannel}#postMessage()`
+			// See #1396
+			recommended: false,
 		},
 		hasSuggestions: true,
 		messages,
 	},
 };
+
+export default config;

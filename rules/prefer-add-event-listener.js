@@ -1,7 +1,6 @@
-'use strict';
-const {isParenthesized} = require('eslint-utils');
-const eventTypes = require('./shared/dom-events.js');
-const {STATIC_REQUIRE_SOURCE_SELECTOR} = require('./selectors/index.js');
+import {isParenthesized} from '@eslint-community/eslint-utils';
+import eventTypes from './shared/dom-events.js';
+import {isUndefined, isNullLiteral, isStaticRequire} from './ast/index.js';
 
 const MESSAGE_ID = 'prefer-add-event-listener';
 const messages = {
@@ -47,17 +46,7 @@ const shouldFixBeforeUnload = (assignedExpression, nodeReturnsSomething) => {
 	return !nodeReturnsSomething.get(assignedExpression);
 };
 
-const isClearing = node => {
-	if (node.type === 'Literal') {
-		return node.raw === 'null';
-	}
-
-	if (node.type === 'Identifier') {
-		return node.name === 'undefined';
-	}
-
-	return false;
-};
+const isClearing = node => isUndefined(node) || isNullLiteral(node);
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
@@ -82,20 +71,24 @@ const create = context => {
 			codePathInfo = codePathInfo.upper;
 		},
 
-		[STATIC_REQUIRE_SOURCE_SELECTOR](node) {
-			if (!isDisabled && excludedPackages.has(node.value)) {
+		CallExpression(node) {
+			if (!isStaticRequire(node)) {
+				return;
+			}
+
+			if (!isDisabled && excludedPackages.has(node.arguments[0].value)) {
 				isDisabled = true;
 			}
 		},
 
-		'ImportDeclaration > Literal'(node) {
-			if (!isDisabled && excludedPackages.has(node.value)) {
+		Literal(node) {
+			if (node.parent.type === 'ImportDeclaration' && !isDisabled && excludedPackages.has(node.value)) {
 				isDisabled = true;
 			}
 		},
 
 		ReturnStatement(node) {
-			codePathInfo.returnsSomething = codePathInfo.returnsSomething || Boolean(node.argument);
+			codePathInfo.returnsSomething ||= Boolean(node.argument);
 		},
 
 		'AssignmentExpression:exit'(node) {
@@ -103,7 +96,7 @@ const create = context => {
 				return;
 			}
 
-			const {left: memberExpression, right: assignedExpression} = node;
+			const {left: memberExpression, right: assignedExpression, operator} = node;
 
 			if (
 				memberExpression.type !== 'MemberExpression'
@@ -141,8 +134,12 @@ const create = context => {
 			} else if (eventTypeName === 'error') {
 				// Disable `onerror` fix, see #1493
 				extra = extraMessages.error;
-			} else {
-				fix = fixer => fixCode(fixer, context.getSourceCode(), node, memberExpression);
+			} else if (
+				operator === '='
+				&& node.parent.type === 'ExpressionStatement'
+				&& node.parent.expression === node
+			) {
+				fix = fixer => fixCode(fixer, context.sourceCode, node, memberExpression);
 			}
 
 			return {
@@ -176,15 +173,19 @@ const schema = [
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `.addEventListener()` and `.removeEventListener()` over `on`-functions.',
+			recommended: true,
 		},
 		fixable: 'code',
 		schema,
+		defaultOptions: [{}],
 		messages,
 	},
 };
+
+export default config;

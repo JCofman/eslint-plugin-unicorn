@@ -1,128 +1,107 @@
-'use strict';
-const isShadowed = require('./utils/is-shadowed.js');
-const {
-	referenceIdentifierSelector,
-	callExpressionSelector,
-} = require('./selectors/index.js');
-const {replaceReferenceIdentifier} = require('./fix/index.js');
-const {fixSpaceAroundKeyword} = require('./fix/index.js');
+import {GlobalReferenceTracker} from './utils/global-reference-tracker.js';
+import {replaceReferenceIdentifier, fixSpaceAroundKeyword} from './fix/index.js';
+import isLeftHandSide from './utils/is-left-hand-side.js';
 
-const METHOD_ERROR_MESSAGE_ID = 'method-error';
-const METHOD_SUGGESTION_MESSAGE_ID = 'method-suggestion';
-const PROPERTY_ERROR_MESSAGE_ID = 'property-error';
+const MESSAGE_ID_ERROR = 'error';
+const MESSAGE_ID_SUGGESTION = 'suggestion';
 const messages = {
-	[METHOD_ERROR_MESSAGE_ID]: 'Prefer `Number.{{name}}()` over `{{name}}()`.',
-	[METHOD_SUGGESTION_MESSAGE_ID]: 'Replace `{{name}}()` with `Number.{{name}}()`.',
-	[PROPERTY_ERROR_MESSAGE_ID]: 'Prefer `Number.{{property}}` over `{{identifier}}`.',
+	[MESSAGE_ID_ERROR]: 'Prefer `Number.{{property}}` over `{{description}}`.',
+	[MESSAGE_ID_SUGGESTION]: 'Replace `{{description}}` with `Number.{{property}}`.',
 };
 
-const methods = {
-	// Safe
+const globalObjects = {
+	// Safe to replace with `Number` properties
 	parseInt: true,
 	parseFloat: true,
-	// Unsafe
+	NaN: true,
+	Infinity: true,
+
+	// Unsafe to replace with `Number` properties
 	isNaN: false,
 	isFinite: false,
 };
 
-const methodsSelector = [
-	callExpressionSelector(Object.keys(methods)),
-	' > ',
-	'.callee',
-].join('');
-
-const propertiesSelector = referenceIdentifierSelector(['NaN', 'Infinity']);
-
 const isNegative = node => {
 	const {parent} = node;
-	return parent && parent.type === 'UnaryExpression' && parent.operator === '-' && parent.argument === node;
+	return parent.type === 'UnaryExpression' && parent.operator === '-' && parent.argument === node;
 };
+
+function checkProperty({node, path: [name]}, sourceCode) {
+	const {parent} = node;
+
+	let property = name;
+	if (name === 'Infinity') {
+		property = isNegative(node) ? 'NEGATIVE_INFINITY' : 'POSITIVE_INFINITY';
+	}
+
+	const problem = {
+		node,
+		messageId: MESSAGE_ID_ERROR,
+		data: {
+			description: name,
+			property,
+		},
+	};
+
+	if (property === 'NEGATIVE_INFINITY') {
+		problem.node = parent;
+		problem.data.description = '-Infinity';
+		problem.fix = function * (fixer) {
+			yield fixer.replaceText(parent, 'Number.NEGATIVE_INFINITY');
+			yield * fixSpaceAroundKeyword(fixer, parent, sourceCode);
+		};
+
+		return problem;
+	}
+
+	const fix = fixer => replaceReferenceIdentifier(node, `Number.${property}`, fixer, sourceCode);
+	const isSafeToFix = globalObjects[name];
+
+	if (isSafeToFix) {
+		problem.fix = fix;
+	} else {
+		problem.suggest = [
+			{
+				messageId: MESSAGE_ID_SUGGESTION,
+				fix,
+			},
+		];
+	}
+
+	return problem;
+}
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const sourceCode = context.getSourceCode();
-	const options = {
-		checkInfinity: true,
+	const {
+		checkInfinity,
+		checkNaN,
+	} = {
+		checkInfinity: false,
+		checkNaN: true,
 		...context.options[0],
 	};
+	const {sourceCode} = context;
 
-	// Cache `NaN` and `Infinity` in `foo = {NaN, Infinity}`
-	const reported = new WeakSet();
+	const objects = Object.keys(globalObjects).filter(name => {
+		if (!checkInfinity && name === 'Infinity') {
+			return false;
+		}
 
-	return {
-		[methodsSelector]: node => {
-			if (isShadowed(context.getScope(), node)) {
-				return;
-			}
+		if (!checkNaN && name === 'NaN') {
+			return false;
+		}
 
-			const {name} = node;
-			const isSafe = methods[name];
+		return true;
+	});
 
-			const problem = {
-				node,
-				messageId: METHOD_ERROR_MESSAGE_ID,
-				data: {
-					name,
-				},
-			};
+	const tracker = new GlobalReferenceTracker({
+		objects,
+		handle: reference => checkProperty(reference, sourceCode),
+		filter: ({node}) => !isLeftHandSide(node),
+	});
 
-			const fix = fixer => replaceReferenceIdentifier(node, `Number.${name}`, fixer, sourceCode);
-
-			if (isSafe) {
-				problem.fix = fix;
-			} else {
-				problem.suggest = [
-					{
-						messageId: METHOD_SUGGESTION_MESSAGE_ID,
-						data: {
-							name,
-						},
-						fix,
-					},
-				];
-			}
-
-			return problem;
-		},
-		[propertiesSelector]: node => {
-			if (reported.has(node) || isShadowed(context.getScope(), node)) {
-				return;
-			}
-
-			const {name, parent} = node;
-			if (name === 'Infinity' && !options.checkInfinity) {
-				return;
-			}
-
-			let property = name;
-			if (name === 'Infinity') {
-				property = isNegative(node) ? 'NEGATIVE_INFINITY' : 'POSITIVE_INFINITY';
-			}
-
-			const problem = {
-				node,
-				messageId: PROPERTY_ERROR_MESSAGE_ID,
-				data: {
-					identifier: name,
-					property,
-				},
-			};
-
-			if (property === 'NEGATIVE_INFINITY') {
-				problem.node = parent;
-				problem.data.identifier = '-Infinity';
-				problem.fix = function * (fixer) {
-					yield fixer.replaceText(parent, 'Number.NEGATIVE_INFINITY');
-					yield * fixSpaceAroundKeyword(fixer, parent, sourceCode);
-				};
-			} else {
-				problem.fix = fixer => replaceReferenceIdentifier(node, `Number.${property}`, fixer, sourceCode);
-			}
-
-			reported.add(node);
-			return problem;
-		},
-	};
+	return tracker.createListeners(context);
 };
 
 const schema = [
@@ -132,23 +111,34 @@ const schema = [
 		properties: {
 			checkInfinity: {
 				type: 'boolean',
-				default: true,
+			},
+			checkNaN: {
+				type: 'boolean',
 			},
 		},
 	},
 ];
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `Number` static properties over global ones.',
+			recommended: true,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
 		schema,
+		defaultOptions: [
+			{
+				checkInfinity: false,
+				checkNaN: true,
+			},
+		],
 		messages,
 	},
 };
+
+export default config;

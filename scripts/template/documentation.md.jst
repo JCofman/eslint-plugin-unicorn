@@ -1,17 +1,27 @@
-# <%= docTitle %>
-<% if (fixableType) { %>
-🔧 *This rule is [auto-fixable](https://eslint.org/docs/user-guide/command-line-interface#fixing-problems).*
-<% } %>
-<!-- More detailed description. Remove this comment. -->
+<!-- end auto-generated rule header -->
+<!-- Do not manually modify this header. Run: `npm run fix:eslint-docs` -->
 
-## Fail
+<!-- Remove this comment, add more detailed description. -->
+
+## Examples
 
 ```js
+// ❌
 const foo = 'unicorn';
+
+// ✅
+const foo = '🦄';
 ```
 
-## Pass
-
 ```js
-const foo = '🦄';
+// ❌
+function foo() {
+	var replace = 'me';
+	return replace;
+}
+
+// ✅
+function foo() {
+	return 'me';
+}
 ```

@@ -1,10 +1,9 @@
-'use strict';
-const {isCommaToken} = require('eslint-utils');
+import {isCommaToken} from '@eslint-community/eslint-utils';
 
-function appendArgument(fixer, node, text, sourceCode) {
+export default function appendArgument(fixer, node, text, sourceCode) {
 	// This function should also work for `NewExpression`
 	// But parentheses of `NewExpression` could be omitted, add this check to prevent accident use on it
-	/* istanbul ignore next */
+	/* c8 ignore next 3 */
 	if (node.type !== 'CallExpression') {
 		throw new Error(`Unexpected node "${node.type}".`);
 	}
@@ -16,5 +15,3 @@ function appendArgument(fixer, node, text, sourceCode) {
 
 	return fixer.insertTextBefore(lastToken, text);
 }
-
-module.exports = appendArgument;

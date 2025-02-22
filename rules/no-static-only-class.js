@@ -1,20 +1,12 @@
-'use strict';
-const {isSemicolonToken} = require('eslint-utils');
-const getClassHeadLocation = require('./utils/get-class-head-location.js');
-const assertToken = require('./utils/assert-token.js');
-const {removeSpacesAfter} = require('./fix/index.js');
+import {isSemicolonToken} from '@eslint-community/eslint-utils';
+import getClassHeadLocation from './utils/get-class-head-location.js';
+import assertToken from './utils/assert-token.js';
+import {removeSpacesAfter} from './fix/index.js';
 
 const MESSAGE_ID = 'no-static-only-class';
 const messages = {
 	[MESSAGE_ID]: 'Use an object instead of a class with only static members.',
 };
-
-const selector = [
-	':matches(ClassDeclaration, ClassExpression)',
-	':not([superClass], [decorators.length>0])',
-	'[body.type="ClassBody"]',
-	'[body.body.length>0]',
-].join('');
 
 const isEqualToken = ({type, value}) => type === 'Punctuator' && value === '=';
 const isDeclarationOfExportDefaultDeclaration = node =>
@@ -49,10 +41,8 @@ function isStaticMember(node) {
 	if (
 		isDeclare
 		|| isReadonly
-		|| typeof accessibility !== 'undefined'
+		|| accessibility !== undefined
 		|| (Array.isArray(decorators) && decorators.length > 0)
-		// TODO: Remove this when we drop support for `@typescript-eslint/parser` v4
-		|| key.type === 'TSPrivateIdentifier'
 	) {
 		return false;
 	}
@@ -140,7 +130,7 @@ function switchClassToObject(node, sourceCode) {
 
 	return function * (fixer) {
 		const classToken = sourceCode.getFirstToken(node);
-		/* istanbul ignore next */
+		/* c8 ignore next */
 		assertToken(classToken, {
 			expected: {type: 'Keyword', value: 'class'},
 			ruleId: 'no-static-only-class',
@@ -162,7 +152,7 @@ function switchClassToObject(node, sourceCode) {
 			if (
 				type === 'ClassExpression'
 				&& parent.type === 'ReturnStatement'
-				&& body.loc.start.line !== parent.loc.start.line
+				&& sourceCode.getLoc(body).start.line !== sourceCode.getLoc(parent).start.line
 				&& sourceCode.text.slice(classToken.range[1], body.range[0]).trim()
 			) {
 				yield fixer.replaceText(classToken, '{');
@@ -197,33 +187,40 @@ function switchClassToObject(node, sourceCode) {
 }
 
 function create(context) {
-	const sourceCode = context.getSourceCode();
+	context.on(['ClassDeclaration', 'ClassExpression'], node => {
+		if (
+			node.superClass
+			|| (node.decorators && node.decorators.length > 0)
+			|| node.body.type !== 'ClassBody'
+			|| node.body.body.length === 0
+			|| node.body.body.some(node => !isStaticMember(node))
+		) {
+			return;
+		}
 
-	return {
-		[selector](node) {
-			if (node.body.body.some(node => !isStaticMember(node))) {
-				return;
-			}
+		const {sourceCode} = context;
 
-			return {
-				node,
-				loc: getClassHeadLocation(node, sourceCode),
-				messageId: MESSAGE_ID,
-				fix: switchClassToObject(node, sourceCode),
-			};
-		},
-	};
+		return {
+			node,
+			loc: getClassHeadLocation(node, sourceCode),
+			messageId: MESSAGE_ID,
+			fix: switchClassToObject(node, sourceCode),
+		};
+	});
 }
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
-			description: 'Forbid classes that only have static members.',
+			description: 'Disallow classes that only have static members.',
+			recommended: true,
 		},
 		fixable: 'code',
 		messages,
 	},
 };
+
+export default config;

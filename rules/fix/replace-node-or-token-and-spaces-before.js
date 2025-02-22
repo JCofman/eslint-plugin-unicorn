@@ -1,14 +1,13 @@
-'use strict';
-const {getParentheses} = require('../utils/parentheses.js');
+import {getParentheses} from '../utils/parentheses.js';
 
-function * replaceNodeOrTokenAndSpacesBefore(nodeOrToken, replacement, fixer, sourceCode, tokenStore = sourceCode) {
+export default function * replaceNodeOrTokenAndSpacesBefore(nodeOrToken, replacement, fixer, sourceCode, tokenStore = sourceCode) {
 	const tokens = getParentheses(nodeOrToken, tokenStore);
 
 	for (const token of tokens) {
 		yield * replaceNodeOrTokenAndSpacesBefore(token, '', fixer, sourceCode, tokenStore);
 	}
 
-	let [start, end] = nodeOrToken.range;
+	let [start, end] = sourceCode.getRange(nodeOrToken);
 
 	const textBefore = sourceCode.text.slice(0, start);
 	const [trailingSpaces] = textBefore.match(/\s*$/);
@@ -17,5 +16,3 @@ function * replaceNodeOrTokenAndSpacesBefore(nodeOrToken, replacement, fixer, so
 
 	yield fixer.replaceTextRange([start, end], `${lineBreak}${replacement}`);
 }
-
-module.exports = replaceNodeOrTokenAndSpacesBefore;

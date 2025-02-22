@@ -1,23 +1,25 @@
-'use strict';
-const {isParenthesized, getStaticValue} = require('eslint-utils');
-const {checkVueTemplate} = require('./utils/rule.js');
-const {methodCallSelector} = require('./selectors/index.js');
-const {isBooleanNode} = require('./utils/boolean.js');
-const shouldAddParenthesesToMemberExpressionObject = require('./utils/should-add-parentheses-to-member-expression-object.js');
+import {isParenthesized, getStaticValue} from '@eslint-community/eslint-utils';
+import {checkVueTemplate} from './utils/rule.js';
+import {isRegexLiteral, isNewExpression, isMethodCall} from './ast/index.js';
+import {isBooleanNode, shouldAddParenthesesToMemberExpressionObject} from './utils/index.js';
 
 const REGEXP_EXEC = 'regexp-exec';
 const STRING_MATCH = 'string-match';
+const SUGGESTION = 'suggestion';
 const messages = {
 	[REGEXP_EXEC]: 'Prefer `.test(…)` over `.exec(…)`.',
 	[STRING_MATCH]: 'Prefer `RegExp#test(…)` over `String#match(…)`.',
+	[SUGGESTION]: 'Switch to `RegExp#test(…)`.',
 };
 
 const cases = [
 	{
 		type: REGEXP_EXEC,
-		selector: methodCallSelector({
+		test: node => isMethodCall(node, {
 			method: 'exec',
 			argumentsLength: 1,
+			optionalCall: false,
+			optionalMember: false,
 		}),
 		getNodes: node => ({
 			stringNode: node.arguments[0],
@@ -28,9 +30,11 @@ const cases = [
 	},
 	{
 		type: STRING_MATCH,
-		selector: methodCallSelector({
+		test: node => isMethodCall(node, {
 			method: 'match',
 			argumentsLength: 1,
+			optionalCall: false,
+			optionalMember: false,
 		}),
 		getNodes: node => ({
 			stringNode: node.callee.object,
@@ -66,37 +70,44 @@ const cases = [
 	},
 ];
 
-const isRegExpNode = node => {
-	if (node.type === 'Literal' && node.regex) {
-		return true;
+const isRegExpNode = node => isRegexLiteral(node) || isNewExpression(node, {name: 'RegExp'});
+
+const isRegExpWithoutGlobalFlag = (node, scope) => {
+	if (isRegexLiteral(node)) {
+		return !node.regex.flags.includes('g');
 	}
 
-	if (
-		node.type === 'NewExpression'
-		&& node.callee.type === 'Identifier'
-		&& node.callee.name === 'RegExp'
-	) {
-		return true;
+	const staticResult = getStaticValue(node, scope);
+
+	// Don't know if there is `g` flag
+	if (!staticResult) {
+		return false;
 	}
 
-	return false;
+	const {value} = staticResult;
+	return (
+		Object.prototype.toString.call(value) === '[object RegExp]'
+		&& !value.global
+	);
 };
 
 /** @param {import('eslint').Rule.RuleContext} context */
-const create = context => Object.fromEntries(
-	cases.map(checkCase => [
-		checkCase.selector,
-		node => {
-			if (!isBooleanNode(node)) {
-				return;
+const create = context => ({
+	* CallExpression(node) {
+		if (!isBooleanNode(node)) {
+			return;
+		}
+
+		for (const {type, test, getNodes, fix} of cases) {
+			if (!test(node)) {
+				continue;
 			}
 
-			const {type, getNodes, fix} = checkCase;
 			const nodes = getNodes(node);
 			const {methodNode, regexpNode} = nodes;
 
 			if (regexpNode.type === 'Literal' && !regexpNode.regex) {
-				return;
+				continue;
 			}
 
 			const problem = {
@@ -104,34 +115,41 @@ const create = context => Object.fromEntries(
 				messageId: type,
 			};
 
-			if (!isRegExpNode(regexpNode)) {
-				const staticResult = getStaticValue(regexpNode, context.getScope());
-				if (staticResult) {
-					const {value} = staticResult;
-					if (
-						Object.prototype.toString.call(value) !== '[object RegExp]'
-						|| value.flags.includes('g')
-					) {
-						return problem;
-					}
-				}
+			const {sourceCode} = context;
+			const fixFunction = fixer => fix(fixer, nodes, sourceCode);
+
+			if (
+				isRegExpNode(regexpNode)
+				|| isRegExpWithoutGlobalFlag(regexpNode, sourceCode.getScope(regexpNode))
+			) {
+				problem.fix = fixFunction;
+			} else {
+				problem.suggest = [
+					{
+						messageId: SUGGESTION,
+						fix: fixFunction,
+					},
+				];
 			}
 
-			problem.fix = fixer => fix(fixer, nodes, context.getSourceCode());
-			return problem;
-		},
-	]),
-);
+			yield problem;
+		}
+	},
+});
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create: checkVueTemplate(create),
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Prefer `RegExp#test()` over `String#match()` and `RegExp#exec()`.',
+			recommended: true,
 		},
 		fixable: 'code',
+		hasSuggestions: true,
 		messages,
 	},
 };
+
+export default config;

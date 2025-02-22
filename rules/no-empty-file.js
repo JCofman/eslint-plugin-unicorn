@@ -1,17 +1,11 @@
-'use strict';
+import {isEmptyNode, isDirective} from './ast/index.js';
 
 const MESSAGE_ID = 'no-empty-file';
 const messages = {
 	[MESSAGE_ID]: 'Empty files are not allowed.',
 };
 
-const isEmpty = node =>
-	(
-		(node.type === 'Program' || node.type === 'BlockStatement')
-		&& node.body.every(currentNode => isEmpty(currentNode))
-	)
-	|| node.type === 'EmptyStatement'
-	|| (node.type === 'ExpressionStatement' && 'directive' in node);
+const isEmpty = node => isEmptyNode(node, isDirective);
 
 const isTripleSlashDirective = node =>
 	node.type === 'Line' && node.value.startsWith('/');
@@ -21,19 +15,19 @@ const hasTripeSlashDirectives = comments =>
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const filename = context.getPhysicalFilename().toLowerCase();
+	const filename = context.physicalFilename;
 
-	if (!/\.(?:js|mjs|cjs|ts|mts|cts)$/.test(filename)) {
-		return {};
+	if (!/\.(?:js|mjs|cjs|jsx|ts|mts|cts|tsx)$/i.test(filename)) {
+		return;
 	}
 
 	return {
 		Program(node) {
-			if (!isEmpty(node)) {
+			if (node.body.some(node => !isEmpty(node))) {
 				return;
 			}
 
-			const sourceCode = context.getSourceCode();
+			const {sourceCode} = context;
 			const comments = sourceCode.getAllComments();
 
 			if (hasTripeSlashDirectives(comments)) {
@@ -49,14 +43,16 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Disallow empty files.',
+			recommended: true,
 		},
-		schema: [],
 		messages,
 	},
 };
+
+export default config;

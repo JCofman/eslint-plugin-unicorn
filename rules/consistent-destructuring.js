@@ -1,26 +1,8 @@
-'use strict';
-const avoidCapture = require('./utils/avoid-capture.js');
-const {not, notLeftHandSideSelector} = require('./selectors/index.js');
+import {getAvailableVariableName, isLeftHandSide} from './utils/index.js';
+import {isCallOrNewExpression} from './ast/index.js';
 
 const MESSAGE_ID = 'consistentDestructuring';
 const MESSAGE_ID_SUGGEST = 'consistentDestructuringSuggest';
-
-const declaratorSelector = [
-	'VariableDeclarator',
-	'[id.type="ObjectPattern"]',
-	'[init]',
-	'[init.type!="Literal"]',
-].join('');
-
-const memberSelector = [
-	'MemberExpression',
-	'[computed!=true]',
-	notLeftHandSideSelector(),
-	not([
-		'CallExpression > .callee',
-		'NewExpression> .callee',
-	]),
-].join('');
 
 const isSimpleExpression = expression => {
 	while (expression) {
@@ -53,31 +35,47 @@ const isChildInParentScope = (child, parent) => {
 
 /** @param {import('eslint').Rule.RuleContext} context */
 const create = context => {
-	const source = context.getSourceCode();
+	const {sourceCode} = context;
 	const declarations = new Map();
 
 	return {
-		[declaratorSelector]: node => {
-			// Ignore any complex expressions (e.g. arrays, functions)
-			if (!isSimpleExpression(node.init)) {
+		VariableDeclarator(node) {
+			if (!(
+				node.id.type === 'ObjectPattern'
+				&& node.init
+				&& node.init.type !== 'Literal'
+				// Ignore any complex expressions (e.g. arrays, functions)
+				&& isSimpleExpression(node.init)
+			)) {
 				return;
 			}
 
-			declarations.set(source.getText(node.init), {
-				scope: context.getScope(),
-				variables: context.getDeclaredVariables(node),
+			declarations.set(sourceCode.getText(node.init), {
+				scope: sourceCode.getScope(node),
+				variables: sourceCode.getDeclaredVariables(node),
 				objectPattern: node.id,
 			});
 		},
-		[memberSelector]: node => {
-			const declaration = declarations.get(source.getText(node.object));
+		MemberExpression(node) {
+			if (
+				node.computed
+				|| (
+					isCallOrNewExpression(node.parent)
+					&& node.parent.callee === node
+				)
+				|| isLeftHandSide(node)
+			) {
+				return;
+			}
+
+			const declaration = declarations.get(sourceCode.getText(node.object));
 
 			if (!declaration) {
 				return;
 			}
 
 			const {scope, objectPattern} = declaration;
-			const memberScope = context.getScope();
+			const memberScope = sourceCode.getScope(node);
 
 			// Property is destructured outside the current scope
 			if (!isChildInParentScope(memberScope, scope)) {
@@ -89,12 +87,12 @@ const create = context => {
 				&& property.key.type === 'Identifier'
 				&& property.value.type === 'Identifier',
 			);
-			const lastProperty = objectPattern.properties[objectPattern.properties.length - 1];
+			const lastProperty = objectPattern.properties.at(-1);
 
 			const hasRest = lastProperty && lastProperty.type === 'RestElement';
 
-			const expression = source.getText(node);
-			const member = source.getText(node.property);
+			const expression = sourceCode.getText(node);
+			const member = sourceCode.getText(node.property);
 
 			// Member might already be destructured
 			const destructuredMember = destructurings.find(property =>
@@ -108,7 +106,7 @@ const create = context => {
 				}
 
 				// Destructured member collides with an existing identifier
-				if (avoidCapture(member, [memberScope]) !== member) {
+				if (getAvailableVariableName(member, [memberScope]) !== member) {
 					return;
 				}
 			}
@@ -134,7 +132,7 @@ const create = context => {
 					},
 					* fix(fixer) {
 						const {properties} = objectPattern;
-						const lastProperty = properties[properties.length - 1];
+						const lastProperty = properties.at(-1);
 
 						yield fixer.replaceText(node, newMember);
 
@@ -151,12 +149,13 @@ const create = context => {
 };
 
 /** @type {import('eslint').Rule.RuleModule} */
-module.exports = {
+const config = {
 	create,
 	meta: {
 		type: 'suggestion',
 		docs: {
 			description: 'Use destructured variables over properties.',
+			recommended: false,
 		},
 		fixable: 'code',
 		hasSuggestions: true,
@@ -166,3 +165,5 @@ module.exports = {
 		},
 	},
 };
+
+export default config;
